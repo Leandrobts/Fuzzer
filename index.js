@@ -11,6 +11,8 @@ import { Scenarios, ScenarioInfo } from './mod_scenarios.js';
 
 // Estado global
 const State = {
+    anomalyCache: new Map(),  // Cache para deduplicar anomalias
+    anomalyThreshold: 5,
     isRunning: false,
     testCount: 0,
     anomalyCount: 0,
@@ -450,27 +452,35 @@ const State = {
         });
     },
     
-    /**
-     * Processa eventos do executor
-     */
-    handleExecutorEvent(event) {
-        switch (event.type) {
-            case 'TICK':
-                this.testCount = event.count;
-                this.updateStats();
-                break;
-                
-            case 'STATUS':
-                // Tracking por cenário
-                if (event.target && !this.scenarioResults[event.target]) {
-                    this.scenarioResults[event.target] = { count: 0, anomalies: 0 };
-                }
-                if (event.target) {
-                    this.scenarioResults[event.target].count++;
-                }
-                break;
-                
-            case 'ANOMALY':
+handleExecutorEvent(event) {
+    switch (event.type) {
+        case 'TICK':
+            this.testCount = event.count;
+            this.updateStats();
+            break;
+            
+        case 'STATUS':
+            if (event.target && !this.scenarioResults[event.target]) {
+                this.scenarioResults[event.target] = { count: 0, anomalies: 0 };
+            }
+            if (event.target) {
+                this.scenarioResults[event.target].count++;
+            }
+            break;
+            
+        case 'ANOMALY':
+            // DEDUP: Verifica se é a mesma anomalia repetida
+            const anomalyKey = `${event.api}_${event.reason}`;
+            
+            if (!this.anomalyCache.has(anomalyKey)) {
+                this.anomalyCache.set(anomalyKey, { count: 0, firstSeen: Date.now() });
+            }
+            
+            const cached = this.anomalyCache.get(anomalyKey);
+            cached.count++;
+            
+            // Só conta como anomalia nova se for única
+            if (cached.count === 1) {
                 this.anomalyCount++;
                 
                 // Registra no cenário
@@ -483,14 +493,30 @@ const State = {
                 
                 this.log('ANOMALY', `${event.api}: ${event.reason}`, event);
                 this.flashAnomaly();
-                this.updateStats();
-                break;
                 
-            case 'DEBUG':
-                console.debug(`[${event.scenario}] ${event.error}`);
-                break;
-        }
-    },
+            } else if (cached.count === this.anomalyThreshold) {
+                // Avisa que está suprimindo
+                this.log('ANOMALY', `🔇 Suprimindo repetições de: ${event.api} (${cached.count}+ ocorrências)`, event);
+                
+            } else if (cached.count % 50 === 0) {
+                // Atualiza a cada 50 repetições
+                this.log('ANOMALY', `🔁 ${event.api}: ${cached.count} ocorrências (suprimido)`, event);
+            }
+            
+            this.updateStats();
+            
+            // Para após muitas repetições do mesmo (modo contínuo)
+            if (cached.count > 100) {
+                this.log('Executor', `⏹ Cenário ${event.api.split(' — ')[0]} pausado (mais de 100 repetições da mesma anomalia)`);
+                // Não para tudo, só loga
+            }
+            break;
+            
+        case 'DEBUG':
+            console.debug(`[${event.scenario}] ${event.error}`);
+            break;
+    }
+},
     
     /**
      * Flash visual para anomalia
