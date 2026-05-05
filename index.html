@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PS4 13.50 WebKit Fuzzer - Modular Edition</title>
+    <style>
+        :root {
+            --bg: #0a0a0a;
+            --surface: #1a1a1a;
+            --text: #00ff00;
+            --accent: #00ccff;
+            --danger: #ff3333;
+            --warning: #ffaa00;
+        }
+        
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: var(--surface);
+            padding: 20px;
+            border: 1px solid var(--text);
+            margin-bottom: 20px;
+        }
+        
+        header h1 {
+            color: var(--accent);
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--text);
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 32px;
+            color: var(--accent);
+            font-weight: bold;
+        }
+        
+        .stat-label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--text);
+            padding: 10px 20px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: var(--text);
+            color: var(--bg);
+        }
+        
+        button.danger {
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+        
+        button.danger:hover {
+            background: var(--danger);
+            color: var(--bg);
+        }
+        
+        .scenario-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .scenario-card {
+            background: var(--surface);
+            border: 1px solid #333;
+            padding: 15px;
+        }
+        
+        .scenario-card.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 10px rgba(0, 204, 255, 0.3);
+        }
+        
+        .scenario-card .risk-HIGH {
+            color: var(--danger);
+        }
+        
+        .scenario-card .risk-CRITICAL {
+            color: #ff0000;
+            font-weight: bold;
+        }
+        
+        .scenario-card .risk-MEDIUM {
+            color: var(--warning);
+        }
+        
+        .log-container {
+            background: var(--surface);
+            border: 1px solid #333;
+            padding: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 12px;
+            margin: 20px 0;
+        }
+        
+        .log-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid #222;
+        }
+        
+        .log-entry.anomaly {
+            color: var(--danger);
+            font-weight: bold;
+        }
+        
+        .log-entry.success {
+            color: #00ff00;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #333;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .env-info {
+            background: var(--surface);
+            padding: 10px;
+            border: 1px solid #333;
+            font-size: 11px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 PS4 WebKit Fuzzer v13.0</h1>
+            <div class="env-info" id="envInfo">Loading environment data...</div>
+        </header>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="testCount">0</div>
+                <div class="stat-label">Tests Executed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="anomalyCount">0</div>
+                <div class="stat-label">Anomalies Found</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="gcCount">0</div>
+                <div class="stat-label">GC Events</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="fpsCounter">0</div>
+                <div class="stat-label">Tests/sec</div>
+            </div>
+        </div>
+        
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressBar"></div>
+        </div>
+        
+        <div class="controls">
+            <button id="btnStartAll">▶ Run All Scenarios</button>
+            <button id="btnStopAll" class="danger">⏹ Stop All</button>
+            <button id="btnRunSingle">▶ Run Selected</button>
+            <button id="btnClearLogs">🗑 Clear Logs</button>
+            <button id="btnExportReport">📄 Export Report</button>
+        </div>
+        
+        <h2>Scenarios</h2>
+        <div class="scenario-grid" id="scenarioGrid">
+            <!-- Populated by JavaScript -->
+        </div>
+        
+        <h2>Event Log</h2>
+        <div class="log-container" id="logContainer">
+            <div class="log-entry">System initialized. Ready for fuzzing.</div>
+        </div>
+    </div>
+    
+    <script type="module" src="index.js"></script>
+</body>
+</html>
