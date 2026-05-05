@@ -1,20 +1,7 @@
 /**
- * MOD_SCENARIOS.JS — Dynamic Test Loader (Robust Version)
- * Carrega automaticamente todos os testes com fallbacks seguros
+ * MOD_SCENARIOS.JS — Dynamic Test Loader (ATUALIZADO)
+ * 15 testes carregados (incluindo PoC da vulnerabilidade confirmada)
  */
-
-// Importa cada teste com try-catch via wrapper
-function loadTest(path, fallback = null) {
-    // Como não podemos usar import() dinâmico no PS4 facilmente,
-    // vamos definir todos os testes inline com lazy loading
-    return fallback;
-}
-
-import { testBufferSlabOverflow } from './tests/buffer_slab_overflow.js';
-import { testTypedarrayOob } from './tests/typedarray_oob.js';
-import { testGcUaf } from './tests/gc_uaf.js';
-import { testJscTypeConfusion } from './tests/jsc_type_confusion.js';
-import { testMessagechannelRace } from './tests/messagechannel_race.js';
 
 // Testes Canvas
 import { testCanvasPixelStealing } from './tests/canvas_pixel_stealing.js';
@@ -43,41 +30,67 @@ import { testLocalStorageSniffing } from './tests/localstorage_sniffing.js';
 // Testes CSS
 import { testCssInjection } from './tests/css_injection.js';
 
+// Testes Avançados (NOVOS)
+import { testBufferSlabOverflow } from './tests/buffer_slab_overflow.js';
+import { testTypedarrayOob } from './tests/typedarray_oob.js';
+import { testGcUaf } from './tests/gc_uaf.js';
+import { testJscTypeConfusion } from './tests/jsc_type_confusion.js';
+import { testMessagechannelRace } from './tests/messagechannel_race.js';
+
+// ⚠️ PoC da Vulnerabilidade Confirmada
+import { testTypedarrayLengthCorruptionPoc } from './tests/typedarray_length_corruption_poc.js';
+
 /**
  * Registry de TODOS os testes disponíveis
- * NOVOS TESTES: Adicione aqui após criar o arquivo
+ * TOTAL: 15 testes
  */
 export const Scenarios = {
-
-    bufferSlabOverflow: testBufferSlabOverflow,
-    typedarrayOob: testTypedarrayOob,
-    gcUaf: testGcUaf,
-    jscTypeConfusion: testJscTypeConfusion,
-    messagechannelRace: testMessagechannelRace,
-    // Canvas & Gráficos
+    // ==========================================
+    // Canvas & Gráficos (1)
+    // ==========================================
     canvasPixelStealing: testCanvasPixelStealing,
     
-    // Arrays & Buffers
+    // ==========================================
+    // Arrays, Buffers & Tipos (4)
+    // ==========================================
     arraybufferNeutering: testArraybufferNeutering,
+    bufferSlabOverflow: testBufferSlabOverflow,
+    typedarrayOob: testTypedarrayOob,
+    typedarrayLengthCorruptionPoc: testTypedarrayLengthCorruptionPoc, // ⚠️ PoC
     
-    // DOM
+    // ==========================================
+    // DOM & CSS (2)
+    // ==========================================
     domClobbering: testDomClobbering,
+    cssInjection: testCssInjection,
     
-    // Prototype & Types
+    // ==========================================
+    // Prototype & JIT (2)
+    // ==========================================
     prototypePollution: testPrototypePollution,
+    jscTypeConfusion: testJscTypeConfusion,
     
-    // Workers & Mensagens
+    // ==========================================
+    // Workers & Mensagens (3)
+    // ==========================================
     workerRaceCondition: testWorkerRaceCondition,
     postMessageLeak: testPostMessageLeak,
+    messagechannelRace: testMessagechannelRace,
     
-    // Timing & Side Channels
+    // ==========================================
+    // GC & Memory (1)
+    // ==========================================
+    gcUaf: testGcUaf,
+    
+    // ==========================================
+    // Timing & Side Channels (1)
+    // ==========================================
     timingSideChannel: testTimingSideChannel,
     
-    // Storage
+    // ==========================================
+    // Storage (1)
+    // ==========================================
     localStorageSniffing: testLocalStorageSniffing,
-    
-    // CSS & Layout
-    cssInjection: testCssInjection,
 };
 
 /**
@@ -101,7 +114,8 @@ export const ScenarioInfo = {
                 name: scenario.name || scenario.id,
                 risk: scenario.risk,
                 description: scenario.description || '',
-                ps4Compatible: scenario.ps4Compatible !== false
+                ps4Compatible: scenario.ps4Compatible !== false,
+                isPoc: scenario.id?.includes('POC') || false
             });
         }
         
@@ -113,13 +127,11 @@ export const ScenarioInfo = {
      */
     getPS4Compatible: function() {
         const compatible = [];
-        
         for (const [key, scenario] of Object.entries(Scenarios)) {
             if (scenario.ps4Compatible !== false) {
                 compatible.push(key);
             }
         }
-        
         return compatible;
     },
     
@@ -128,14 +140,25 @@ export const ScenarioInfo = {
      */
     getByRisk: function(risk) {
         const filtered = [];
-        
         for (const [key, scenario] of Object.entries(Scenarios)) {
             if (scenario.risk === risk) {
                 filtered.push(key);
             }
         }
-        
         return filtered;
+    },
+    
+    /**
+     * Retorna apenas PoCs (provas de conceito)
+     */
+    getPocs: function() {
+        const pocs = [];
+        for (const [key, scenario] of Object.entries(Scenarios)) {
+            if (scenario.id?.includes('POC')) {
+                pocs.push(key);
+            }
+        }
+        return pocs;
     },
     
     /**
@@ -152,31 +175,55 @@ export const ScenarioInfo = {
         const scenario = Scenarios[key];
         if (!scenario) return false;
         
-        // Verifica se tem os métodos necessários
         return typeof scenario.setup === 'function' &&
                Array.isArray(scenario.probe) &&
                scenario.probe.length > 0 &&
                typeof scenario.trigger === 'function' &&
                typeof scenario.cleanup === 'function';
+    },
+    
+    /**
+     * Retorna resumo por risco
+     */
+    getRiskSummary: function() {
+        const summary = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+        for (const scenario of Object.values(Scenarios)) {
+            if (summary[scenario.risk] !== undefined) {
+                summary[scenario.risk]++;
+            }
+        }
+        return summary;
     }
 };
 
+// ==========================================
 // Log de inicialização
-const total = Object.keys(Scenarios).length;
+// ==========================================
+const total = ScenarioInfo.total;
 const valid = Object.keys(Scenarios).filter(k => ScenarioInfo.isValid(k)).length;
 const ps4Compatible = ScenarioInfo.getPS4Compatible().length;
+const pocs = ScenarioInfo.getPocs();
+const riskSummary = ScenarioInfo.getRiskSummary();
 
-console.log(`%c📋 Scenario Loader: ${total} testes carregados`, 'color: #00ff00');
+console.log(`%c📋 Scenario Loader: ${total} testes carregados`, 'color: #00ff00; font-weight: bold;');
 console.log(`%c   ✅ Válidos: ${valid}`, 'color: #00ccff');
 console.log(`%c   🎮 PS4 Compatible: ${ps4Compatible}`, 'color: #ffaa00');
+console.log(`%c   ⚡ CRITICAL: ${riskSummary.CRITICAL} | 🔴 HIGH: ${riskSummary.HIGH} | 🟡 MEDIUM: ${riskSummary.MEDIUM} | ⚪ LOW: ${riskSummary.LOW}`, 'color: #888');
+
+if (pocs.length > 0) {
+    console.log(`%c   🏆 PoCs carregados: ${pocs.join(', ')}`, 'color: #ff4444; font-weight: bold;');
+}
 
 // Lista categorias
 const categories = ScenarioInfo.getByCategory();
 for (const [cat, tests] of Object.entries(categories)) {
-    console.log(`%c   📁 ${cat}: ${tests.length} teste(s)`, 'color: #888');
+    const names = tests.map(t => t.isPoc ? `⚠️${t.name}` : t.name).join(', ');
+    console.log(`%c   📁 ${cat}: ${names}`, 'color: #555; font-size: 10px;');
 }
 
-// Exporta também um array para iteração fácil
+// ==========================================
+// Exporta também como array para iteração
+// ==========================================
 export const ScenarioList = Object.entries(Scenarios).map(([key, scenario]) => ({
     key,
     ...scenario
