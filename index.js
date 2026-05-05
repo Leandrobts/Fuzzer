@@ -452,71 +452,55 @@ const State = {
         });
     },
     
+// Em handleExecutorEvent, ANOMALY case:
+// Adicionar flag para não repetir mensagem de pausa
 handleExecutorEvent(event) {
     switch (event.type) {
-        case 'TICK':
-            this.testCount = event.count;
-            this.updateStats();
-            break;
-            
-        case 'STATUS':
-            if (event.target && !this.scenarioResults[event.target]) {
-                this.scenarioResults[event.target] = { count: 0, anomalies: 0 };
-            }
-            if (event.target) {
-                this.scenarioResults[event.target].count++;
-            }
-            break;
-            
+        // ... outros casos ...
+        
         case 'ANOMALY':
-            // DEDUP: Verifica se é a mesma anomalia repetida
             const anomalyKey = `${event.api}_${event.reason}`;
             
             if (!this.anomalyCache.has(anomalyKey)) {
-                this.anomalyCache.set(anomalyKey, { count: 0, firstSeen: Date.now() });
+                this.anomalyCache.set(anomalyKey, { 
+                    count: 0, 
+                    firstSeen: Date.now(),
+                    paused: false  // ⚠️ NOVO: flag de pausa
+                });
             }
             
             const cached = this.anomalyCache.get(anomalyKey);
             cached.count++;
             
-            // Só conta como anomalia nova se for única
             if (cached.count === 1) {
                 this.anomalyCount++;
-                
-                // Registra no cenário
                 if (event.api) {
                     const scenarioId = event.api.split(' — ')[0];
                     if (this.scenarioResults[scenarioId]) {
                         this.scenarioResults[scenarioId].anomalies++;
                     }
                 }
-                
                 this.log('ANOMALY', `${event.api}: ${event.reason}`, event);
                 this.flashAnomaly();
                 
             } else if (cached.count === this.anomalyThreshold) {
-                // Avisa que está suprimindo
                 this.log('ANOMALY', `🔇 Suprimindo repetições de: ${event.api} (${cached.count}+ ocorrências)`, event);
                 
-            } else if (cached.count % 50 === 0) {
-                // Atualiza a cada 50 repetições
+            } else if (cached.count % 50 === 0 && cached.count <= 200) {
+                // ⚠️ CORRIGIDO: Só loga a cada 50 até 200, depois silencia totalmente
                 this.log('ANOMALY', `🔁 ${event.api}: ${cached.count} ocorrências (suprimido)`, event);
             }
             
-            this.updateStats();
-            
-            // Para após muitas repetições do mesmo (modo contínuo)
-            if (cached.count > 100) {
-                this.log('Executor', `⏹ Cenário ${event.api.split(' — ')[0]} pausado (mais de 100 repetições da mesma anomalia)`);
-                // Não para tudo, só loga
+            // ⚠️ CORRIGIDO: Pausa silenciosa (só loga uma vez)
+            if (cached.count > 100 && !cached.paused) {
+                cached.paused = true;
+                this.log('Executor', `⏹ Cenário ${event.api.split(' — ')[0]} pausado (>100 repetições) - silenciado`);
             }
-            break;
             
-        case 'DEBUG':
-            console.debug(`[${event.scenario}] ${event.error}`);
+            this.updateStats();
             break;
     }
-},
+}
     
     /**
      * Flash visual para anomalia
