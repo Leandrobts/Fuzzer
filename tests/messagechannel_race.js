@@ -131,4 +131,105 @@ export const testMessagechannelRace = {
                         bufferLen: entry.buffer.byteLength
                     });
                 } catch (e) {
-                    // Esperado: detached
+                    // Esperado: detached buffer
+                    this.raceResults.push({
+                        channel: entry.index,
+                        type: 'post_transfer_detached',
+                        error: e.message
+                    });
+                }
+            }
+        }
+        
+        // Ataque 3: Fecha ports enquanto mensagens estão em trânsito
+        for (const entry of this.channels) {
+            try {
+                entry.port2.postMessage({ cmd: 'fast', data: Math.random() });
+                entry.port2.close(); // Fecha imediatamente após post
+            } catch (e) {
+                this.raceResults.push({
+                    channel: entry.index,
+                    type: 'close_race_error',
+                    error: e.message
+                });
+            }
+        }
+        
+        // Ataque 4: BroadcastChannel race
+        if (typeof BroadcastChannel !== 'undefined') {
+            try {
+                const bc = new BroadcastChannel('fuzzer-race');
+                const raceBuffer = new ArrayBuffer(64);
+                const raceView = new Uint32Array(raceBuffer);
+                raceView.fill(0x13371337);
+                
+                bc.postMessage({ buffer: raceBuffer });
+                
+                bc.onmessage = (e) => {
+                    this.raceResults.push({
+                        type: 'broadcast_received',
+                        data: e.data
+                    });
+                };
+                
+                // Fecha broadcast channel imediatamente
+                setTimeout(() => {
+                    bc.close();
+                    // Tenta postMessage após close
+                    try {
+                        bc.postMessage({ afterClose: true });
+                    } catch (e) {
+                        this.raceResults.push({
+                            type: 'broadcast_post_close',
+                            error: e.message
+                        });
+                    }
+                }, 10);
+                
+            } catch (e) {
+                this.broadcastError = e.message;
+            }
+        }
+        
+        // Força GC durante transfers
+        if (typeof gc === 'function') {
+            gc();
+        }
+    },
+    
+    cleanup: function() {
+        for (const entry of this.channels) {
+            try { entry.port1.close(); } catch (e) {}
+            try { entry.port2.close(); } catch (e) {}
+        }
+        this.channels = null;
+        this.buffers = null;
+        this.raceResults = null;
+    },
+    
+    customValidator: function(baseResults, afterResults) {
+        // Verifica se conseguiu acessar buffer após transferência
+        if (this.raceResults) {
+            const postTransferAccesses = this.raceResults.filter(
+                r => r.type === 'post_transfer_access'
+            );
+            
+            if (postTransferAccesses.length > 0) {
+                return {
+                    anomaly: true,
+                    reason: `💥 UAF VIA TRANSFER: ${postTransferAccesses.length} acessos a buffers transferidos! Valores: ${JSON.stringify(postTransferAccesses.slice(0, 3))}`
+                };
+            }
+        }
+        
+        // Verifica se double transfer foi possível
+        if (this.transferAttempts > this.channels.length) {
+            return {
+                anomaly: true,
+                reason: `🏆 DOUBLE TRANSFER: Mais transferências que canais (${this.transferAttempts} > ${this.channels.length})`
+            };
+        }
+        
+        return { anomaly: false, reason: '' };
+    }
+};
