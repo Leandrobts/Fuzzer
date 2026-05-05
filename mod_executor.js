@@ -176,36 +176,54 @@ runProbe: function(scenario, base, val, deltaMs) {
     }
 
     // --- 6. STALE DATA (Info Leaks & NaN-Boxing) ---
-    if (base.type === 'number' && valType === 'number' && !isNaN(val)) {
-        const baseNum = parseFloat(base.repr);
-        
-        if (Math.abs(val - baseNum) > 10000 || (baseNum === 0 && (val < -10000 || val > 10000))) {
-            
-            // NaN-Boxing analysis
-            const buf = new ArrayBuffer(8);
-            const f64 = new Float64Array(buf);
-            const u64 = new BigUint64Array(buf);
-            f64[0] = val;
-            const bits = u64[0];
-            
-            const addr = bits & 0x0000FFFFFFFFFFFFn;
-            const upper16 = (bits >> 48n) & 0xFFFFn;
-
-            let diagnostic = `Vazamento Numérico: ${base.repr} -> ${val}`;
-            
-            if (upper16 === 0x0000n && addr > 0x100000n) {
-                diagnostic = `💥 PONTEIRO NATIVO: 0x${addr.toString(16)}`;
-            } else if (upper16 === 0xFFFFn) {
-                const intVal = Number(bits & 0xFFFFFFFFn);
-                diagnostic = `💥 JSValue Int32 Interno: 0x${bits.toString(16)} (int=${intVal})`;
-            }
-
-            result.anomaly = true;
-            result.telemetry = 'STALE_DATA';
-            result.reason = diagnostic;
-            return result;
-        }
+if (base.type === 'number' && valType === 'number' && !isNaN(val)) {
+    const baseNum = parseFloat(base.repr);
+    
+    // ⚠️ FILTRO CRÍTICO: Ignora nosso marcador -1 (detached/error esperado)
+    if (val === -1 && baseNum !== -1) {
+        // A probe retornou -1 (nosso código de erro esperado)
+        // NÃO é vazamento, é comportamento controlado
+        return result;
     }
+    
+    // ⚠️ FILTRO: Ignora se baseline é 0xDEADBEEF (valor de preenchimento)
+    // e resultado é -1 (nosso marcador de detached)
+    if (baseNum === 0xDEADBEEF && val === -1) {
+        return result; // Buffer detached esperado
+    }
+    
+    // ⚠️ FILTRO: Ignora valores Float64 extremos que são lixo de memória esperado
+    if (Math.abs(baseNum) > 1e100 && val === -1) {
+        return result; // Float view detached esperado
+    }
+    
+    if (Math.abs(val - baseNum) > 10000 || (baseNum === 0 && (val < -10000 || val > 10000))) {
+        
+        // NaN-Boxing analysis
+        const buf = new ArrayBuffer(8);
+        const f64 = new Float64Array(buf);
+        const u64 = new BigUint64Array(buf);
+        f64[0] = val;
+        const bits = u64[0];
+        
+        const addr = bits & 0x0000FFFFFFFFFFFFn;
+        const upper16 = (bits >> 48n) & 0xFFFFn;
+
+        let diagnostic = `Vazamento Numérico: ${base.repr} -> ${val}`;
+        
+        if (upper16 === 0x0000n && addr > 0x100000n) {
+            diagnostic = `💥 PONTEIRO NATIVO: 0x${addr.toString(16)}`;
+        } else if (upper16 === 0xFFFFn) {
+            const intVal = Number(bits & 0xFFFFFFFFn);
+            diagnostic = `💥 JSValue Int32 Interno: 0x${bits.toString(16)} (int=${intVal})`;
+        }
+
+        result.anomaly = true;
+        result.telemetry = 'STALE_DATA';
+        result.reason = diagnostic;
+        return result;
+    }
+}
 
     return result;
 }
