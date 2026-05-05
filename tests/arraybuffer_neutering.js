@@ -1,7 +1,6 @@
 /**
  * TEST: ArrayBuffer Neutering/Detachment
- * Tenta usar buffer após transferência
- * PS4 13.50: SharedArrayBuffer=false, Atomics=true
+ * CORRIGIDO: Falsos positivos de TYPE CONFUSION
  */
 
 export const testArraybufferNeutering = {
@@ -13,80 +12,96 @@ export const testArraybufferNeutering = {
     ps4Compatible: true,
     
     setup: function() {
-        // Cria buffer com padrão conhecido
         this.buffer = new ArrayBuffer(1024);
         this.view32 = new Uint32Array(this.buffer);
         this.view8 = new Uint8Array(this.buffer);
         this.viewFloat = new Float64Array(this.buffer);
         
-        // Preenche com padrão único (0xDEADBEEF em cada Uint32)
+        // Preenche com padrão
         for (let i = 0; i < this.view32.length; i++) {
             this.view32[i] = 0xDEADBEEF;
         }
         
-        // Armazena referência fraca para detectar coleta
         this.weakBuffer = typeof WeakRef !== 'undefined' ? new WeakRef(this.buffer) : null;
-        
-        // Cria worker para transferência (se disponível)
         this.worker = null;
+        this.neuteredDetected = false;
+        
         if (typeof Worker !== 'undefined') {
-            const workerCode = `
-                self.onmessage = function(e) {
-                    const buffer = e.data;
-                    const view = new Uint8Array(buffer || []);
-                    self.postMessage({ length: buffer ? buffer.byteLength : 0, firstByte: view[0] });
-                };
-            `;
-            const blob = new Blob([workerCode], { type: 'application/javascript' });
-            this.worker = new Worker(URL.createObjectURL(blob));
+            try {
+                const workerCode = `
+                    self.onmessage = function(e) {
+                        const buffer = e.data;
+                        if (buffer) {
+                            try {
+                                const view = new Uint8Array(buffer);
+                                self.postMessage({ 
+                                    byteLength: buffer.byteLength,
+                                    firstByte: view[0]
+                                });
+                            } catch (err) {
+                                self.postMessage({ 
+                                    error: err.message,
+                                    byteLength: 0
+                                });
+                            }
+                        } else {
+                            self.postMessage({ byteLength: -1 });
+                        }
+                    };
+                `;
+                const blob = new Blob([workerCode], { type: 'application/javascript' });
+                this.worker = new Worker(URL.createObjectURL(blob));
+            } catch (e) {
+                this.workerError = e.message;
+            }
         }
     },
     
     probe: [
-        // Probe 0: byteLength do buffer
+        // Probe 0: byteLength do buffer (CORRIGIDO: retorna número mesmo em erro)
         function(scenario) {
             try {
-                return scenario.buffer?.byteLength ?? 'NULL';
+                return scenario.buffer?.byteLength ?? -1;
             } catch (e) {
-                return 'ERROR_BYTELENGTH';
+                return -1; // Detached = -1 (número, não string)
             }
         },
         
-        // Probe 1: Primeiro valor Uint32 (deveria ser 0xDEADBEEF)
+        // Probe 1: Primeiro valor Uint32
         function(scenario) {
             try {
-                return '0x' + (scenario.view32?.[0]?.toString(16) ?? 'ERROR');
+                return scenario.view32?.[0] ?? -1;
             } catch (e) {
-                return '💥 DETACHED_ACCESS_U32';
+                return -1; // Detached = -1
             }
         },
         
-        // Probe 2: Primeiro byte
+        // Probe 2: Primeiro byte (CORRIGIDO)
         function(scenario) {
             try {
-                return scenario.view8?.[0] ?? 'ERROR';
+                return scenario.view8?.[0] ?? -1;
             } catch (e) {
-                return '💥 DETACHED_ACCESS_U8';
+                return -1; // Detached = -1, não "ERROR"
             }
         },
         
         // Probe 3: WeakRef status
         function(scenario) {
-            if (!scenario.weakBuffer) return 'NO_WEAKREF';
+            if (!scenario.weakBuffer) return -2; // NO_WEAKREF
             try {
                 const deref = scenario.weakBuffer.deref();
-                return deref ? 'ALIVE' : 'COLLECTED';
+                return deref ? 1 : 0; // 1=ALIVE, 0=COLLECTED
             } catch (e) {
-                return 'WEAKREF_ERROR';
+                return -3;
             }
         },
         
-        // Probe 4: Float64 view access
+        // Probe 4: Float64 view access (CORRIGIDO)
         function(scenario) {
             try {
-                return scenario.viewFloat?.[0] ?? 'ERROR';
+                return scenario.viewFloat?.[0] ?? -1;
             } catch (e) {
-                return '💥 DETACHED_ACCESS_F64';
+                return -1; // Detached
             }
         }
     ],
@@ -95,33 +110,36 @@ export const testArraybufferNeutering = {
         // Ataque 1: Transferir buffer para worker
         if (this.worker) {
             try {
+                // Tenta transferir - PS4 pode ou não suportar
                 this.worker.postMessage(this.buffer, [this.buffer]);
+                this.neuteredDetected = true;
                 
-                // Espera resposta (timeout curto)
                 setTimeout(() => {
-                    this.worker?.terminate();
+                    try { this.worker?.terminate(); } catch (e) {}
                 }, 500);
             } catch (e) {
-                // Transfer pode não ser suportada
+                // Transfer pode não ser suportada no PS4
                 this.transferError = e.message;
             }
         }
         
-        // Ataque 2: Tentar neutering via slice(0,0)
-        try {
-            const sliced = this.buffer.slice(0, 0);
-        } catch (e) {
-            // slice pode falhar
-        }
-        
-        // Ataque 3: Forçar GC e tentar acessar
+        // Ataque 2: Forçar GC
         if (typeof gc === 'function') {
             gc();
         }
         
-        // Ataque 4: Tentar crescer/encolher buffer
+        // Ataque 3: Tentar DataView após possível detachment
         try {
-            // Cria novo buffer do mesmo tamanho (pode realocar na mesma região)
+            const dataView = new DataView(this.buffer);
+            dataView.setUint32(0, 0x12345678, true);
+            this.dataViewSuccess = true;
+        } catch (e) {
+            this.dataViewSuccess = false;
+            this.dataViewError = e.message;
+        }
+        
+        // Ataque 4: Criar novo buffer mesmo tamanho (heap reuse)
+        try {
             const newBuffer = new ArrayBuffer(1024);
             const newView = new Uint32Array(newBuffer);
             newView[0] = 0xCAFEBABE;
@@ -129,19 +147,10 @@ export const testArraybufferNeutering = {
         } catch (e) {
             this.newBuffer = null;
         }
-        
-        // Ataque 5: Tenta modificar via DataView
-        try {
-            const dataView = new DataView(this.buffer);
-            dataView.setUint32(0, 0x12345678, true);
-        } catch (e) {
-            // Acesso a buffer detached deve lançar erro
-            this.dataViewError = e.message;
-        }
     },
     
     cleanup: function() {
-        this.worker?.terminate();
+        try { this.worker?.terminate(); } catch (e) {}
         this.worker = null;
         this.buffer = null;
         this.view32 = null;
@@ -152,30 +161,45 @@ export const testArraybufferNeutering = {
     },
     
     customValidator: function(baseResults, afterResults) {
-        // Detecta uso após detachment
-        const detachedKeywords = ['DETACHED_ACCESS', 'ERROR_BYTELENGTH', 'ERROR'];
+        // Verifica se buffer foi neutered (byteLength == 0 ou -1)
+        const byteLengthAfter = afterResults[0];
+        const byteLengthBefore = baseResults[0];
         
-        for (let i = 0; i < afterResults.length; i++) {
-            const result = String(afterResults[i]);
+        // Detecta neutering real (byteLength mudou de >0 para 0 ou -1)
+        if (byteLengthBefore > 0 && (byteLengthAfter === 0 || byteLengthAfter === -1)) {
+            // Verifica se ainda consegue acessar (UAF real)
+            const uint32Access = afterResults[1];
+            const uint8Access = afterResults[2];
+            const floatAccess = afterResults[4];
             
-            for (const keyword of detachedKeywords) {
-                if (result.includes(keyword)) {
-                    return {
-                        anomaly: true,
-                        reason: `💥 BUFFER DETACHED: probe[${i}] = ${result} (acesso após transferência detectado)`
-                    };
-                }
-            }
-        }
-        
-        // Verifica se byteLength diminuiu mas acesso ainda funciona
-        if (typeof afterResults[0] === 'number' && afterResults[0] < 1024) {
-            if (!String(afterResults[1]).includes('DETACHED')) {
+            // Se byteLength é 0/-1 mas acesso retorna valor != -1, é UAF!
+            if (uint32Access !== -1 && uint32Access !== 0xDEADBEEF) {
                 return {
                     anomaly: true,
-                    reason: `🏆 PARTIAL DETACH: byteLength=${afterResults[0]} mas acesso ainda funciona: ${afterResults[1]}`
+                    reason: `💥 REAL UAF: Buffer detached (byteLength=${byteLengthAfter}) mas view32[0]=0x${uint32Access?.toString(16)} (stale data!)`
                 };
             }
+            
+            if (uint8Access !== -1) {
+                return {
+                    anomaly: true,
+                    reason: `🏆 STALE BYTE ACCESS: Buffer detached mas view8[0]=${uint8Access}`
+                };
+            }
+            
+            // Neutering detectado mas sem UAF (comportamento correto)
+            return {
+                anomaly: false,
+                reason: `Buffer neutered corretamente (byteLength=${byteLengthAfter}, acessos retornam -1)`
+            };
+        }
+        
+        // Verifica se DataView funcionou em buffer detached
+        if (this.dataViewSuccess && (byteLengthAfter === 0 || byteLengthAfter === -1)) {
+            return {
+                anomaly: true,
+                reason: '💥 DATAVIEW ON DETACHED: DataView criado e escrito em buffer detached!'
+            };
         }
         
         return { anomaly: false, reason: '' };
