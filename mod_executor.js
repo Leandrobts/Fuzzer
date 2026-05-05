@@ -95,100 +95,118 @@ export const Executor = {
     /**
      * Analisador de anomalias (O Radar Sniper)
      */
-    runProbe: function(scenario, base, val, deltaMs) {
-        const result = { anomaly: false, telemetry: '', reason: '' };
-        const valRepr = String(val);
-        const valType = typeof val;
+    /**
+ * Analisador de anomalias CORRIGIDO
+ * Filtra falsos positivos de probes que retornam erro
+ */
+runProbe: function(scenario, base, val, deltaMs) {
+    const result = { anomaly: false, telemetry: '', reason: '' };
+    const valRepr = String(val);
+    const valType = typeof val;
 
-        // --- 1. GCOracle: GHOST LEAK (UAF Confirmado) ---
-        const tag = `${scenario.id}_target`;
-        if (GCOracle.freedTags.has(tag)) {
-            // Se o objeto foi coletado mas o tipo mudou radicalmente (não é mais null/undefined)
-            if (valType !== base.type && val !== null && val !== undefined && valRepr !== base.repr) {
-                result.anomaly = true;
-                result.telemetry = 'CONFIRMED_UAF_GHOST';
-                result.reason = `[GHOST LEAK] Objeto coletado mutou: ${base.type} -> ${valType}. Valor: ${valRepr.slice(0, 30)}`;
-                return result;
-            }
-        }
-
-        // --- 2. TIMING ANOMALY (PS4 Jaguar Calibration) ---
-        const TIMING_THRESHOLD_MS = 150; // Ajustado para o CPU lento do PS4
-        const isLayoutProbe = base.fnStr.includes('getBoundingClientRect') 
-                           || base.fnStr.includes('offsetWidth')
-                           || base.fnStr.includes('getComputedStyle');
-
-        if (base.ok && deltaMs > TIMING_THRESHOLD_MS && !isLayoutProbe) {
-            result.anomaly = true;
-            result.telemetry = 'TIMING_ANOMALY';
-            result.reason = `[ENGINE HANG] Loop bloqueante detectado: ${deltaMs.toFixed(2)}ms`;
-            return result;
-        }
-
-        
-        // --- 3. TYPE CONFUSION & CUSTOM ALERTS ---
-        // Se a nossa probe disparou um Alerta Customizado (String com os nossos Emojis)
-        const isCustomAlert = valType === 'string' && (val.includes('💥') || val.includes('🏆') || val.includes('LEAK'));
-        
-        if (isCustomAlert) {
-            result.anomaly = true;
-            result.telemetry = 'CUSTOM_LEAK';
-            result.reason = val; // Imprime a nossa mensagem exata de OOB/Ponteiro!
-            return result;
-        }
-
-        // Se for uma mudança de tipo real não planeada (O verdadeiro Type Confusion)
-        if (valType !== base.type && base.type !== 'undefined' && val !== null) {
-            result.anomaly = true;
-            result.telemetry = 'TYPE_CONFUSION';
-            result.reason = `[TYPE CONFUSION] ${base.type} -> ${valType}. Baseline: ${base.repr} | Pós: ${valRepr}`;
-            return result;
-        }
-
-        // --- 4. BOOLEAN FLIP (GC Validated) ---
-        if (base.type === 'boolean' && valType === 'boolean') {
-            const flipped = val !== (base.repr === 'true');
-            if (flipped && GCOracle.freedTags.has(tag)) {
-                result.anomaly = true;
-                result.telemetry = 'BOOLEAN_FLIP';
-                result.reason = `[BOOLEAN FLIP + GC] Estado mudou após coleta: ${base.repr} -> ${val}`;
-                return result;
-            }
-        }
-
-        // --- 5. STALE DATA (Info Leaks & NaN-Boxing) ---
-        if (base.type === 'number' && valType === 'number' && !isNaN(val)) {
-            const baseNum = parseFloat(base.repr);
-            
-            // Filtro Sniper: Ignora contadores pequenos, foca em saltos de memória ou 0 -> Pointer
-            if (Math.abs(val - baseNum) > 10000 || (baseNum === 0 && (val < -10000 || val > 10000))) {
-                
-                // Análise de NaN-Boxing para identificar o que vazou
-                const buf = new ArrayBuffer(8);
-                const f64 = new Float64Array(buf);
-                const u64 = new BigUint64Array(buf);
-                f64[0] = val;
-                const bits = u64[0];
-                
-                const addr = bits & 0x0000FFFFFFFFFFFFn;
-                const upper16 = (bits >> 48n) & 0xFFFFn;
-
-                let diagnostic = `Vazamento Numérico: ${base.repr} -> ${val}`;
-                
-                if (upper16 === 0x0000n && addr > 0x100000n) {
-                    diagnostic = `💥 PONTEIRO NATIVO: 0x${addr.toString(16)}`;
-                } else if (upper16 === 0xFFFFn) {
-                    const intVal = Number(bits & 0xFFFFFFFFn);
-                    diagnostic = `💥 JSValue Int32 Interno: 0x${bits.toString(16)} (int=${intVal})`;
-                }
-
-                result.anomaly = true;
-                result.telemetry = 'STALE_DATA';
-                result.reason = diagnostic;
-                return result;
-            }
-        }
-
+    // --- FILTRO ANTI-FALSO-POSITIVO ---
+    // Se o valor contém "ERROR" ou "DETACHED" (comportamento esperado)
+    const isExpectedError = valRepr.includes('ERROR') || 
+                           valRepr.includes('DETACHED') ||
+                           valRepr === '-1'; // Nosso marcador de detached
+    
+    // Se baseline é número e valor é string de erro, IGNORAR
+    if (base.type === 'number' && valType === 'string' && isExpectedError) {
+        return result; // Não é anomalia, é comportamento esperado
+    }
+    
+    // Se ambos são -1 (nosso marcador), também ignorar
+    if (base.repr === '-1' && valRepr === '-1') {
         return result;
     }
+
+    // --- 1. GCOracle: GHOST LEAK ---
+    const tag = `${scenario.id}_target`;
+    if (GCOracle.freedTags.has(tag)) {
+        if (valType !== base.type && val !== null && val !== undefined && valRepr !== base.repr) {
+            result.anomaly = true;
+            result.telemetry = 'CONFIRMED_UAF_GHOST';
+            result.reason = `[GHOST LEAK] Objeto coletado mutou: ${base.type} -> ${valType}. Valor: ${valRepr.slice(0, 30)}`;
+            return result;
+        }
+    }
+
+    // --- 2. TIMING ANOMALY ---
+    const TIMING_THRESHOLD_MS = 150;
+    const isLayoutProbe = base.fnStr.includes('getBoundingClientRect') 
+                       || base.fnStr.includes('offsetWidth')
+                       || base.fnStr.includes('getComputedStyle');
+
+    if (base.ok && deltaMs > TIMING_THRESHOLD_MS && !isLayoutProbe) {
+        result.anomaly = true;
+        result.telemetry = 'TIMING_ANOMALY';
+        result.reason = `[ENGINE HANG] Loop bloqueante: ${deltaMs.toFixed(2)}ms`;
+        return result;
+    }
+
+    // --- 3. CUSTOM ALERTS (💥, 🏆, LEAK) ---
+    const isCustomAlert = valType === 'string' && 
+                         (val.includes('💥') || val.includes('🏆') || val.includes('LEAK'));
+    
+    if (isCustomAlert) {
+        result.anomaly = true;
+        result.telemetry = 'CUSTOM_LEAK';
+        result.reason = val;
+        return result;
+    }
+
+    // --- 4. TYPE CONFUSION REAL ---
+    // Só alerta se NÃO for erro esperado
+    if (valType !== base.type && base.type !== 'undefined' && val !== null && !isExpectedError) {
+        result.anomaly = true;
+        result.telemetry = 'TYPE_CONFUSION';
+        result.reason = `[TYPE CONFUSION] ${base.type} -> ${valType}. Baseline: ${base.repr} | Pós: ${valRepr}`;
+        return result;
+    }
+
+    // --- 5. BOOLEAN FLIP ---
+    if (base.type === 'boolean' && valType === 'boolean') {
+        const flipped = val !== (base.repr === 'true');
+        if (flipped && GCOracle.freedTags.has(tag)) {
+            result.anomaly = true;
+            result.telemetry = 'BOOLEAN_FLIP';
+            result.reason = `[BOOLEAN FLIP + GC] ${base.repr} -> ${val}`;
+            return result;
+        }
+    }
+
+    // --- 6. STALE DATA (Info Leaks & NaN-Boxing) ---
+    if (base.type === 'number' && valType === 'number' && !isNaN(val)) {
+        const baseNum = parseFloat(base.repr);
+        
+        if (Math.abs(val - baseNum) > 10000 || (baseNum === 0 && (val < -10000 || val > 10000))) {
+            
+            // NaN-Boxing analysis
+            const buf = new ArrayBuffer(8);
+            const f64 = new Float64Array(buf);
+            const u64 = new BigUint64Array(buf);
+            f64[0] = val;
+            const bits = u64[0];
+            
+            const addr = bits & 0x0000FFFFFFFFFFFFn;
+            const upper16 = (bits >> 48n) & 0xFFFFn;
+
+            let diagnostic = `Vazamento Numérico: ${base.repr} -> ${val}`;
+            
+            if (upper16 === 0x0000n && addr > 0x100000n) {
+                diagnostic = `💥 PONTEIRO NATIVO: 0x${addr.toString(16)}`;
+            } else if (upper16 === 0xFFFFn) {
+                const intVal = Number(bits & 0xFFFFFFFFn);
+                diagnostic = `💥 JSValue Int32 Interno: 0x${bits.toString(16)} (int=${intVal})`;
+            }
+
+            result.anomaly = true;
+            result.telemetry = 'STALE_DATA';
+            result.reason = diagnostic;
+            return result;
+        }
+    }
+
+    return result;
+}
 };
