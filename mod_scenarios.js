@@ -10,8 +10,11 @@ function loadTest(path, fallback = null) {
     return fallback;
 }
 
-// Todos os testes são carregados aqui
-// ADICIONE NOVOS TESTES: import + adicione ao objeto Scenarios
+import { testBufferSlabOverflow } from './tests/buffer_slab_overflow.js';
+import { testTypedarrayOob } from './tests/typedarray_oob.js';
+import { testGcUaf } from './tests/gc_uaf.js';
+import { testJscTypeConfusion } from './tests/jsc_type_confusion.js';
+import { testMessagechannelRace } from './tests/messagechannel_race.js';
 
 // Testes Canvas
 import { testCanvasPixelStealing } from './tests/canvas_pixel_stealing.js';
@@ -45,6 +48,12 @@ import { testCssInjection } from './tests/css_injection.js';
  * NOVOS TESTES: Adicione aqui após criar o arquivo
  */
 export const Scenarios = {
+
+    bufferSlabOverflow: testBufferSlabOverflow,
+    typedarrayOob: testTypedarrayOob,
+    gcUaf: testGcUaf,
+    jscTypeConfusion: testJscTypeConfusion,
+    messagechannelRace: testMessagechannelRace,
     // Canvas & Gráficos
     canvasPixelStealing: testCanvasPixelStealing,
     
