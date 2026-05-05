@@ -109,4 +109,77 @@ export const testWorkerRaceCondition = {
     ],
     
     trigger: function() {
-       
+        // Para cada worker, inicia operação de race
+        for (let i = 0; i < this.workers.length; i++) {
+            const worker = this.workers[i];
+            const channel = this.channels[i];
+            const buffer = this.sharedBuffers[i % this.sharedBuffers.length];
+            
+            if (!worker || !channel || !buffer) continue;
+            
+            // Configura listener no port 1
+            channel.port1.onmessage = (e) => {
+                this.raceResults.push({
+                    workerIndex: i,
+                    data: e.data
+                });
+            };
+            
+            // Envia comando para worker
+            worker.postMessage({
+                cmd: i % 2 === 0 ? 'race_write' : 'race_read_write',
+                buffer: buffer,
+                port: channel.port2,
+                iterations: 10000
+            }, [channel.port2]);
+        }
+        
+        // Enquanto workers escrevem, main thread também lê/escreve
+        if (this.sharedBuffers.length > 0) {
+            const view = new Int32Array(this.sharedBuffers[0]);
+            for (let i = 0; i < 5000; i++) {
+                const v = view[0];
+                view[2] = v * 2;
+            }
+        }
+        
+        // Aguarda um pouco (não bloqueante)
+        setTimeout(() => {
+            this.workers.forEach(w => w?.terminate());
+        }, 2000);
+        
+        // Força GC (pode causar UAF nos buffers compartilhados)
+        if (typeof gc === 'function') {
+            gc();
+        }
+    },
+    
+    cleanup: function() {
+        this.workers.forEach(w => {
+            try { w.terminate(); } catch (e) {}
+        });
+        this.workers = null;
+        this.channels = null;
+        this.sharedBuffers = null;
+    },
+    
+    customValidator: function(baseResults, afterResults) {
+        // Verifica se valores nos buffers são inconsistentes (race condition)
+        if (typeof afterResults[2] === 'string' && afterResults[2].startsWith('[')) {
+            try {
+                const values = JSON.parse(afterResults[2]);
+                
+                // Se values[0] e values[1] não são negativos um do outro
+                if (Math.abs(values[0]) !== Math.abs(values[1]) && 
+                    values[0] !== 0 && values[1] !== 0) {
+                    return {
+                        anomaly: true,
+                        reason: `🏆 RACE CONDITION: Valores inconsistentes detectados: ${afterResults[2]} (esperado: simétricos)`
+                    };
+                }
+            } catch (e) {}
+        }
+        
+        return { anomaly: false, reason: '' };
+    }
+};
