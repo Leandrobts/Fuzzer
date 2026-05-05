@@ -1,6 +1,9 @@
 /**
- * INDEX.JS — PS4 Fuzzer Main Entry Point (CORRIGIDO)
- * Agora carrega e atualiza dinamicamente os cenários
+ * INDEX.JS — PS4 Fuzzer Main Entry Point (VERSÃO FINAL CORRIGIDA)
+ * - Dedup de anomalias com silenciamento progressivo
+ * - Filtro de falsos positivos aprimorado
+ * - 14 cenários carregados dinamicamente
+ * - Interface responsiva com stats em tempo real
  */
 
 import { GC, GCOracle } from './mod_gc.js';
@@ -9,39 +12,41 @@ import { Groomer } from './mod_groomer.js';
 import { Telemetry } from './mod_telemetry.js';
 import { Scenarios, ScenarioInfo } from './mod_scenarios.js';
 
-// Estado global
 const State = {
-    anomalyCache: new Map(),  // Cache para deduplicar anomalias
-    anomalyThreshold: 5,
     isRunning: false,
     testCount: 0,
     anomalyCount: 0,
+    uniqueAnomalyCount: 0,
     gcEvents: 0,
     selectedScenarios: new Set(),
     fpsInterval: null,
     testTimes: [],
-    scenarioResults: {},  // Armazena resultados por cenário
+    scenarioResults: {},
+    anomalyCache: new Map(),
+    anomalyThreshold: 5,
+    startTime: null,
+    pausedScenarios: new Set(),
     
     /**
      * Inicializa a aplicação
      */
     async init() {
-        console.log('%c🚀 PS4 WebKit Fuzzer v13.0 Initializing...', 'color: #00ff00; font-size: 16px');
+        console.log('%c🚀 PS4 WebKit Fuzzer v13.0 Initializing...', 'color: #00ff00; font-size: 16px;');
         
         // Inicializa GCOracle
         if (typeof GCOracle.init === 'function') {
             const gcActive = GCOracle.init();
             console.log(`%c  GCOracle: ${gcActive ? '✅ Active' : '⚠️ Not available'}`, 
                 gcActive ? 'color: #00ff00' : 'color: #ffaa00');
+        } else {
+            console.warn('  GCOracle: ❌ init method not found');
         }
         
         // Detecta capacidades do ambiente
         const env = await this.detectEnvironment();
-        
-        // Atualiza info do ambiente
         this.updateEnvironmentDisplay(env);
         
-        // Renderiza cenários (TODOS agora)
+        // Renderiza cenários
         this.renderScenarios();
         
         // Configura event listeners
@@ -57,6 +62,13 @@ const State = {
         console.log(`%c   Scenarios: ${ScenarioInfo.total} total | PS4 Compatible: ${ScenarioInfo.getPS4Compatible().length}`, 'color: #888');
         
         this.log('System', `Fuzzer v13.0 ready - ${ScenarioInfo.total} testes disponíveis`);
+        
+        // Log de categorias
+        const categories = ScenarioInfo.getByCategory();
+        for (const [cat, tests] of Object.entries(categories)) {
+            const names = tests.map(t => t.name || t.id).join(', ');
+            console.log(`%c   📁 ${cat}: ${names}`, 'color: #666; font-size: 10px;');
+        }
     },
     
     /**
@@ -79,7 +91,10 @@ const State = {
             weakRef: typeof WeakRef !== 'undefined',
             finalizationRegistry: typeof FinalizationRegistry !== 'undefined',
             worker: typeof Worker !== 'undefined',
+            sharedWorker: typeof SharedWorker !== 'undefined',
             serviceWorker: typeof ServiceWorker !== 'undefined',
+            messageChannel: typeof MessageChannel !== 'undefined',
+            broadcastChannel: typeof BroadcastChannel !== 'undefined',
             fetch: typeof fetch !== 'undefined',
             websocket: typeof WebSocket !== 'undefined',
             performanceNow: typeof performance.now === 'function',
@@ -96,18 +111,22 @@ const State = {
         if (!el) return;
         
         const memoryInfo = env.memory ? 
-            ` | Heap: ${(env.memory.usedJSHeapSize/1048576).toFixed(1)}MB/${(env.memory.jsHeapSizeLimit/1048576).toFixed(1)}MB` : '';
+            ` | Heap: ${(env.memory.usedJSHeapSize/1048576).toFixed(1)}MB / ${(env.memory.jsHeapSizeLimit/1048576).toFixed(1)}MB` : '';
+        
+        const isPS4 = env.userAgent.includes('PlayStation');
         
         el.innerHTML = `
-            <strong>${env.userAgent}</strong><br>
+            <strong>${isPS4 ? '🎮 ' : ''}${env.userAgent}</strong><br>
             <span style="font-size:11px">
             Canvas: ${env.canvas ? '✅' : '❌'} | 
             WebGL: ${env.webgl ? '✅' : '❌'} | 
             WASM: ${env.wasm ? '✅' : '❌'} | 
             SAB: ${env.sharedArrayBuffer ? '✅' : '❌'} | 
             WeakRef: ${env.weakRef ? '✅' : '❌'} |
+            FinReg: ${env.finalizationRegistry ? '✅' : '❌'} |
             GC: ${env.gcAvailable ? '✅' : '⚠️'} |
-            Worker: ${env.worker ? '✅' : '❌'}
+            Worker: ${env.worker ? '✅' : '❌'} |
+            MsgChan: ${env.messageChannel ? '✅' : '❌'}
             ${memoryInfo}
             </span>
         `;
@@ -137,15 +156,25 @@ const State = {
             categories[cat].push({ name, scenario });
         }
         
+        // Ordem de categorias desejada
+        const categoryOrder = ['TYPES', 'GC', 'JIT', 'WORKER', 'CANVAS', 'DOM', 'PROTO', 'TIMING', 'STORAGE', 'UNKNOWN'];
+        const sortedCategories = Object.keys(categories).sort((a, b) => {
+            const ia = categoryOrder.indexOf(a);
+            const ib = categoryOrder.indexOf(b);
+            return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+        
         // Renderiza por categoria
-        for (const [category, tests] of Object.entries(categories)) {
-            // Adiciona header de categoria
+        for (const category of sortedCategories) {
+            const tests = categories[category];
+            
+            // Header de categoria
             const catHeader = document.createElement('div');
-            catHeader.style.cssText = 'grid-column:1/-1;color:#888;font-size:12px;padding:5px 0;border-bottom:1px solid #333;';
+            catHeader.style.cssText = 'grid-column: 1 / -1; color: #888; font-size: 12px; padding: 8px 5px 3px 5px; border-bottom: 1px solid #333; margin-top: 5px;';
             catHeader.textContent = `📁 ${category} (${tests.length} teste${tests.length > 1 ? 's' : ''})`;
             grid.appendChild(catHeader);
             
-            // Renderiza cada teste
+            // Cards
             for (const { name, scenario } of tests) {
                 const card = this.createScenarioCard(name, scenario);
                 grid.appendChild(card);
@@ -163,12 +192,13 @@ const State = {
         card.className = 'scenario-card';
         card.dataset.scenario = name;
         
-        const riskColor = {
+        const riskColors = {
             'LOW': '#ffaa00',
             'MEDIUM': '#ff8800',
             'HIGH': '#ff4444',
             'CRITICAL': '#ff0000'
-        }[scenario.risk] || '#888';
+        };
+        const riskColor = riskColors[scenario.risk] || '#888';
         
         const isPS4 = scenario.ps4Compatible !== false;
         const probeCount = Array.isArray(scenario.probe) ? scenario.probe.length : 0;
@@ -176,15 +206,16 @@ const State = {
         
         card.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:start;">
-                <h3 style="margin:0;font-size:14px;">${(scenario.name || name).replace(/([A-Z])/g, ' $1').trim()}</h3>
-                ${isPS4 ? '<span style="color:#00ff00;font-size:10px;">🎮 PS4</span>' : ''}
+                <h3 style="margin:0;font-size:13px;">${(scenario.name || name).replace(/([A-Z])/g, ' $1').trim()}</h3>
+                ${isPS4 ? '<span style="color:#00ff00;font-size:9px;" title="PS4 Compatible">🎮</span>' : ''}
             </div>
-            <div style="color:${riskColor};font-weight:bold;font-size:11px;">⚠ ${scenario.risk}</div>
+            <div style="color:${riskColor};font-weight:bold;font-size:10px;margin:2px 0;">⚠ ${scenario.risk}</div>
             <div style="font-size:10px;color:#888;">ID: ${scenario.id}</div>
             <div style="font-size:10px;color:#666;">Probes: ${probeCount}</div>
-            <div style="font-size:10px;color:#555;margin-top:3px;">${description}</div>
-            <div class="scenario-result" style="font-size:10px;margin-top:5px;display:none;"></div>
-            <label style="display:block;margin-top:8px;">
+            <div style="font-size:10px;color:#555;margin-top:2px;line-height:1.2;">${description}</div>
+            <div class="scenario-result" style="font-size:10px;margin-top:5px;display:none;padding:3px;background:#111;border-radius:3px;"></div>
+            <div class="scenario-status" style="font-size:9px;margin-top:3px;color:#666;"></div>
+            <label style="display:block;margin-top:8px;cursor:pointer;">
                 <input type="checkbox" class="scenario-check" 
                        data-scenario="${name}" 
                        ${this.isRecommended(name) ? 'checked' : ''}>
@@ -192,7 +223,7 @@ const State = {
             </label>
         `;
         
-        // Evento de clique no card (toggle checkbox)
+        // Clique no card
         card.addEventListener('click', (e) => {
             if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'LABEL') {
                 const checkbox = card.querySelector('.scenario-check');
@@ -203,7 +234,7 @@ const State = {
             }
         });
         
-        // Evento de mudança no checkbox
+        // Mudança no checkbox
         const checkbox = card.querySelector('.scenario-check');
         checkbox.addEventListener('change', () => {
             this.updateSelectedScenarios();
@@ -219,15 +250,20 @@ const State = {
         const scenario = Scenarios[name];
         if (!scenario) return false;
         
-        // No PS4, prioriza cenários que funcionam
         const isPS4 = navigator.userAgent.includes('PlayStation');
         
         if (isPS4) {
             const ps4Recommended = [
-                'canvasPixelStealing', 
+                'canvasPixelStealing',
                 'domClobbering', 
                 'prototypePollution',
+                'typedarrayOob',
                 'arraybufferNeutering',
+                'bufferSlabOverflow',
+                'gcUaf',
+                'jscTypeConfusion',
+                'messagechannelRace',
+                'workerRaceCondition',
                 'timingSideChannel'
             ];
             return ps4Recommended.includes(name);
@@ -247,8 +283,6 @@ const State = {
         document.querySelectorAll('.scenario-check:checked').forEach(cb => {
             const scenarioName = cb.dataset.scenario;
             this.selectedScenarios.add(scenarioName);
-            
-            // Atualiza visual do card
             const card = cb.closest('.scenario-card');
             if (card) card.classList.add('active');
         });
@@ -258,9 +292,14 @@ const State = {
             if (card) card.classList.remove('active');
         });
         
-        // Log se mudou
         if (previousCount !== this.selectedScenarios.size) {
-            console.log(`%c📋 Scenarios selecionados: ${this.selectedScenarios.size}`, 'color: #00ccff');
+            console.log(`%c📋 Selected: ${this.selectedScenarios.size} scenarios`, 'color: #00ccff');
+        }
+        
+        // Atualiza contador no botão
+        const startBtn = document.getElementById('btnStartAll');
+        if (startBtn && !this.isRunning) {
+            startBtn.textContent = `▶ Run All (${this.selectedScenarios.size})`;
         }
     },
     
@@ -271,7 +310,6 @@ const State = {
         const bind = (id, event, handler) => {
             const el = document.getElementById(id);
             if (el) el.addEventListener(event, handler.bind(this));
-            else console.warn(`Elemento #${id} não encontrado`);
         };
         
         bind('btnStartAll', 'click', () => this.startFuzzing(false));
@@ -281,11 +319,21 @@ const State = {
         bind('btnRunSingle', 'click', () => this.startFuzzing(true));
         bind('btnSelectAll', 'click', () => this.selectAllScenarios());
         bind('btnDeselectAll', 'click', () => this.deselectAllScenarios());
+        bind('btnResetStats', 'click', () => this.resetStats());
         
-        // Tecla de atalho: ESC para parar
+        // Tecla ESC = parar
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
+            if (e.key === 'Escape' && this.isRunning) {
                 this.stopFuzzing();
+                this.log('System', '⏹ Parado via tecla ESC');
+            }
+        });
+        
+        // Tecla R = rodar quando parado
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'r' && !this.isRunning && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                this.startFuzzing(false);
             }
         });
     },
@@ -313,6 +361,26 @@ const State = {
     },
     
     /**
+     * Reseta estatísticas
+     */
+    resetStats() {
+        if (this.isRunning) {
+            this.log('UI', '⚠️ Pare o fuzzer antes de resetar stats');
+            return;
+        }
+        this.testCount = 0;
+        this.anomalyCount = 0;
+        this.uniqueAnomalyCount = 0;
+        this.gcEvents = 0;
+        this.scenarioResults = {};
+        this.anomalyCache.clear();
+        this.pausedScenarios.clear();
+        this.updateStats();
+        this.updateScenarioCards();
+        this.log('UI', '🔄 Estatísticas resetadas');
+    },
+    
+    /**
      * Inicia fuzzing
      */
     async startFuzzing(singlePass = false) {
@@ -321,7 +389,6 @@ const State = {
             return;
         }
         
-        // Atualiza seleção
         this.updateSelectedScenarios();
         
         if (this.selectedScenarios.size === 0) {
@@ -330,10 +397,13 @@ const State = {
         }
         
         this.isRunning = true;
-        this.testCount = 0;
-        this.anomalyCount = 0;
-        this.testTimes = [];
-        this.scenarioResults = {};
+        this.startTime = performance.now();
+        
+        if (!singlePass) {
+            // Reset apenas se for modo contínuo
+            this.anomalyCache.clear();
+            this.pausedScenarios.clear();
+        }
         
         this.log('Executor', `🚀 Iniciando fuzz cycle (${singlePass ? 'único' : 'contínuo'})`);
         
@@ -349,10 +419,10 @@ const State = {
         
         this.log('Executor', `📋 ${scenariosToRun.length} cenários válidos carregados`);
         
-        // Lista cenários
-        scenariosToRun.forEach(s => {
-            this.log('Executor', `   └─ ${s.id} [${s.risk}]`);
-        });
+        // Lista por risco
+        const criticalCount = scenariosToRun.filter(s => s.risk === 'CRITICAL').length;
+        const highCount = scenariosToRun.filter(s => s.risk === 'HIGH').length;
+        this.log('Executor', `   ⚡ CRITICAL: ${criticalCount} | 🔴 HIGH: ${highCount} | 🟡 MEDIUM/LOW: ${scenariosToRun.length - criticalCount - highCount}`);
         
         // Prepara heap
         this.log('Groomer', 'Preparando heap...');
@@ -368,9 +438,15 @@ const State = {
         // Inicia contador FPS
         this.startFPSCounter();
         
-        // Desabilita botão de start
+        // Desabilita botão start
         const startBtn = document.getElementById('btnStartAll');
-        if (startBtn) startBtn.disabled = true;
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.textContent = '⏳ Running...';
+        }
+        
+        // Atualiza status visual
+        document.body.style.borderTop = '3px solid #00ff00';
         
         // Executa
         try {
@@ -380,23 +456,23 @@ const State = {
                 this.handleExecutorEvent(event);
                 
                 if (singlePass) {
-                    if (event.type === 'ANOMALY') {
-                        this.log('Executor', '⏹ Modo single: anomalia encontrada, parando');
+                    if (this.uniqueAnomalyCount >= 5) {
+                        this.log('Executor', '⏹ Modo single: 5 anomalias únicas encontradas, parando');
                         break;
                     }
-                    if (this.testCount >= 5000) {
-                        this.log('Executor', '⏹ Modo single: 5000 testes atingidos');
+                    if (this.testCount >= 10000) {
+                        this.log('Executor', '⏹ Modo single: 10000 testes atingidos');
                         break;
                     }
                 }
                 
                 // Yield para UI
-                if (this.testCount % 100 === 0) {
+                if (this.testCount % 50 === 0) {
                     await new Promise(r => setTimeout(r, 0));
                 }
             }
         } catch (e) {
-            this.log('Executor', `❌ Erro: ${e.message}`);
+            this.log('Executor', `❌ Erro fatal: ${e.message}`);
             console.error('Fuzzing error:', e);
         }
         
@@ -414,19 +490,27 @@ const State = {
         
         // Habilita botão
         const startBtn = document.getElementById('btnStartAll');
-        if (startBtn) startBtn.disabled = false;
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.textContent = `▶ Run All (${this.selectedScenarios.size})`;
+        }
+        
+        // Restaura visual
+        document.body.style.borderTop = '3px solid transparent';
         
         if (wasRunning) {
-            const summary = {
-                tests: this.testCount,
-                anomalies: this.anomalyCount,
-                gcEvents: this.gcEvents,
-                scenarios: this.selectedScenarios.size
-            };
+            const elapsed = this.startTime ? ((performance.now() - this.startTime) / 1000).toFixed(1) : '?';
             
-            this.log('Executor', `⏹ Parado | Testes: ${summary.tests} | Anomalias: ${summary.anomalies} | GC: ${summary.gcEvents}`);
+            this.log('Executor', '━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            this.log('Executor', `⏹ SESSÃO ENCERRADA`);
+            this.log('Executor', `   Testes: ${this.testCount.toLocaleString()}`);
+            this.log('Executor', `   Anomalias únicas: ${this.uniqueAnomalyCount}`);
+            this.log('Executor', `   Total alarmes: ${this.anomalyCount}`);
+            this.log('Executor', `   GC events: ${this.gcEvents}`);
+            this.log('Executor', `   Duração: ${elapsed}s`);
+            this.log('Executor', `   Cenários: ${this.selectedScenarios.size}`);
+            this.log('Executor', '━━━━━━━━━━━━━━━━━━━━━━━━━━');
             
-            // Atualiza resultados nos cards
             this.updateScenarioCards();
         }
         
@@ -434,83 +518,108 @@ const State = {
     },
     
     /**
-     * Atualiza cards com resultados
+     * Processa eventos do executor
      */
-    updateScenarioCards() {
-        document.querySelectorAll('.scenario-card').forEach(card => {
-            const name = card.dataset.scenario;
-            const resultEl = card.querySelector('.scenario-result');
-            
-            if (resultEl && this.scenarioResults[name]) {
-                resultEl.style.display = 'block';
-                const r = this.scenarioResults[name];
-                resultEl.innerHTML = `
-                    Testes: ${r.count} | Anomalias: ${r.anomalies}
-                `;
-                resultEl.style.color = r.anomalies > 0 ? '#ff4444' : '#00ff00';
-            }
-        });
-    },
-    
-// Em handleExecutorEvent, ANOMALY case:
-// Adicionar flag para não repetir mensagem de pausa
-handleExecutorEvent(event) {
-    switch (event.type) {
-        // ... outros casos ...
-        
-        case 'ANOMALY':
-            const anomalyKey = `${event.api}_${event.reason}`;
-            
-            if (!this.anomalyCache.has(anomalyKey)) {
-                this.anomalyCache.set(anomalyKey, { 
-                    count: 0, 
-                    firstSeen: Date.now(),
-                    paused: false  // ⚠️ NOVO: flag de pausa
-                });
-            }
-            
-            const cached = this.anomalyCache.get(anomalyKey);
-            cached.count++;
-            
-            if (cached.count === 1) {
-                this.anomalyCount++;
-                if (event.api) {
-                    const scenarioId = event.api.split(' — ')[0];
-                    if (this.scenarioResults[scenarioId]) {
-                        this.scenarioResults[scenarioId].anomalies++;
-                    }
+    handleExecutorEvent(event) {
+        switch (event.type) {
+            case 'TICK':
+                this.testCount = event.count;
+                break;
+                
+            case 'STATUS':
+                if (event.target && !this.scenarioResults[event.target]) {
+                    this.scenarioResults[event.target] = { 
+                        count: 0, 
+                        anomalies: 0, 
+                        uniqueAnomalies: new Set(),
+                        paused: false
+                    };
                 }
-                this.log('ANOMALY', `${event.api}: ${event.reason}`, event);
-                this.flashAnomaly();
+                if (event.target) {
+                    this.scenarioResults[event.target].count++;
+                }
+                break;
                 
-            } else if (cached.count === this.anomalyThreshold) {
-                this.log('ANOMALY', `🔇 Suprimindo repetições de: ${event.api} (${cached.count}+ ocorrências)`, event);
+            case 'ANOMALY':
+                this.anomalyCount++;
                 
-            } else if (cached.count % 50 === 0 && cached.count <= 200) {
-                // ⚠️ CORRIGIDO: Só loga a cada 50 até 200, depois silencia totalmente
-                this.log('ANOMALY', `🔁 ${event.api}: ${cached.count} ocorrências (suprimido)`, event);
-            }
-            
-            // ⚠️ CORRIGIDO: Pausa silenciosa (só loga uma vez)
-            if (cached.count > 100 && !cached.paused) {
-                cached.paused = true;
-                this.log('Executor', `⏹ Cenário ${event.api.split(' — ')[0]} pausado (>100 repetições) - silenciado`);
-            }
-            
-            this.updateStats();
-            break;
-    }
-}
+                const anomalyKey = `${event.api}_${event.reason}`;
+                
+                // Inicializa cache se necessário
+                if (!this.anomalyCache.has(anomalyKey)) {
+                    this.anomalyCache.set(anomalyKey, { 
+                        count: 0, 
+                        firstSeen: Date.now(),
+                        paused: false,
+                        scenario: event.api.split(' — ')[0]
+                    });
+                }
+                
+                const cached = this.anomalyCache.get(anomalyKey);
+                cached.count++;
+                
+                // Primeira ocorrência = anomalia única
+                if (cached.count === 1) {
+                    this.uniqueAnomalyCount++;
+                    
+                    // Registra no cenário
+                    if (event.api) {
+                        const scenarioId = event.api.split(' — ')[0];
+                        if (this.scenarioResults[scenarioId]) {
+                            this.scenarioResults[scenarioId].anomalies++;
+                            this.scenarioResults[scenarioId].uniqueAnomalies.add(anomalyKey);
+                        }
+                    }
+                    
+                    // Log completo
+                    this.log('ANOMALY', `🔴 ${event.api}`, event);
+                    this.log('ANOMALY', `   └─ ${event.reason}`);
+                    this.flashAnomaly();
+                    
+                } else if (cached.count === this.anomalyThreshold) {
+                    // Começa a suprimir
+                    this.log('ANOMALY', `🔇 Suprimindo: ${event.api.split(' — ')[0]} (${cached.count}+ repetições)`, event);
+                    
+                } else if (cached.count % 50 === 0 && cached.count <= 200) {
+                    // Atualização periódica (até 200)
+                    this.log('ANOMALY', `🔁 ${event.api.split(' — ')[0]}: ${cached.count} repetições (suprimido)`, event);
+                }
+                
+                // Pausa silenciosa
+                if (cached.count > 100 && !cached.paused) {
+                    cached.paused = true;
+                    const scenarioId = cached.scenario;
+                    this.pausedScenarios.add(scenarioId);
+                    if (this.scenarioResults[scenarioId]) {
+                        this.scenarioResults[scenarioId].paused = true;
+                    }
+                    this.log('Executor', `⏸ ${scenarioId}: pausado (>100 repetições) — outras categorias continuam`, event);
+                }
+                
+                break;
+                
+            case 'DEBUG':
+                if (event.scenario && event.error) {
+                    console.debug(`[DEBUG:${event.scenario}] ${event.error}`);
+                }
+                break;
+        }
+    },
     
     /**
      * Flash visual para anomalia
      */
     flashAnomaly() {
         const originalBg = document.body.style.backgroundColor;
+        const originalBorder = document.body.style.borderTopColor;
+        
         document.body.style.backgroundColor = '#1a0000';
+        document.body.style.borderTopColor = '#ff0000';
+        
         setTimeout(() => {
             document.body.style.backgroundColor = originalBg || 'var(--bg, #0a0a0a)';
-        }, 150);
+            document.body.style.borderTopColor = this.isRunning ? '#00ff00' : 'transparent';
+        }, 200);
     },
     
     /**
@@ -523,15 +632,76 @@ handleExecutorEvent(event) {
         };
         
         setText('testCount', this.testCount.toLocaleString());
-        setText('anomalyCount', this.anomalyCount.toLocaleString());
+        setText('anomalyCount', this.uniqueAnomalyCount.toLocaleString());
         setText('gcCount', this.gcEvents);
+        
+        // Tempo decorrido
+        if (this.isRunning && this.startTime) {
+            const elapsed = ((performance.now() - this.startTime) / 1000).toFixed(0);
+            setText('elapsedTime', `${elapsed}s`);
+        } else if (!this.isRunning && this.testCount > 0) {
+            setText('elapsedTime', 'Parado');
+        }
         
         // FPS
         if (this.testTimes.length > 1) {
             const timeRange = this.testTimes[this.testTimes.length - 1] - this.testTimes[0];
             const fps = timeRange > 0 ? (1000 / timeRange * this.testTimes.length) : 0;
-            setText('fpsCounter', fps.toFixed(1));
+            setText('fpsCounter', fps.toFixed(0));
         }
+        
+        // Progresso
+        const progressBar = document.getElementById('progressBar');
+        if (progressBar && this.isRunning) {
+            // Animação de progresso infinito
+            const progress = (Date.now() % 3000) / 3000 * 100;
+            progressBar.style.width = `${progress}%`;
+        } else if (progressBar && !this.isRunning) {
+            progressBar.style.width = '0%';
+        }
+    },
+    
+    /**
+     * Atualiza cards com resultados
+     */
+    updateScenarioCards() {
+        document.querySelectorAll('.scenario-card').forEach(card => {
+            const name = card.dataset.scenario;
+            const resultEl = card.querySelector('.scenario-result');
+            const statusEl = card.querySelector('.scenario-status');
+            
+            if (this.scenarioResults[name]) {
+                const r = this.scenarioResults[name];
+                
+                if (resultEl) {
+                    resultEl.style.display = 'block';
+                    if (r.anomalies > 0) {
+                        resultEl.innerHTML = `🔴 ${r.anomalies} alarmes (${r.uniqueAnomalies?.size || r.anomalies} únicos)`;
+                        resultEl.style.color = '#ff4444';
+                        resultEl.style.background = '#1a0000';
+                    } else if (r.count > 0) {
+                        resultEl.innerHTML = `✅ ${r.count} testes limpos`;
+                        resultEl.style.color = '#00ff00';
+                        resultEl.style.background = '#001a00';
+                    }
+                }
+                
+                if (statusEl) {
+                    if (r.paused) {
+                        statusEl.textContent = '⏸ PAUSADO (repetitivo)';
+                        statusEl.style.color = '#ffaa00';
+                    } else if (this.isRunning && this.selectedScenarios.has(name)) {
+                        statusEl.textContent = '▶ Rodando...';
+                        statusEl.style.color = '#00ff00';
+                    } else {
+                        statusEl.textContent = '';
+                    }
+                }
+            } else {
+                if (resultEl) resultEl.style.display = 'none';
+                if (statusEl) statusEl.textContent = '';
+            }
+        });
     },
     
     /**
@@ -558,9 +728,10 @@ handleExecutorEvent(event) {
      * Atualizador periódico da UI
      */
     startUIUpdater() {
-        setInterval(() => {
+        this.uiInterval = setInterval(() => {
             this.updateStats();
-        }, 1000);
+            this.updateScenarioCards();
+        }, 500);
     },
     
     /**
@@ -593,27 +764,37 @@ handleExecutorEvent(event) {
         entry.className = `log-entry ${type.toLowerCase()}`;
         
         const time = new Date().toLocaleTimeString();
-        const color = type === 'ANOMALY' ? '#ff4444' : 
-                      type === 'Executor' ? '#00ccff' : 
-                      '#888';
+        
+        const colors = {
+            'ANOMALY': '#ff4444',
+            'Executor': '#00ccff',
+            'System': '#00ff00',
+            'Groomer': '#ffaa00',
+            'UI': '#888888'
+        };
+        const color = colors[type] || '#888';
         
         entry.innerHTML = `
-            <span style="color:#666;font-size:10px;">[${time}]</span>
+            <span style="color:#555;font-size:10px;">[${time}]</span>
             <span style="color:${color};font-weight:bold;font-size:10px;">[${type}]</span>
             <span style="font-size:11px;">${message}</span>
         `;
         
         container.appendChild(entry);
+        
+        // Auto-scroll
         container.scrollTop = container.scrollHeight;
         
-        // Limita a 500 entradas
-        while (container.children.length > 500) {
+        // Limita a 1000 entradas
+        while (container.children.length > 1000) {
             container.removeChild(container.firstChild);
         }
         
         // Telemetria
         if (typeof Telemetry !== 'undefined' && Telemetry.log) {
-            Telemetry.log({ type, message, data });
+            try {
+                Telemetry.log({ type, message, data });
+            } catch (e) {}
         }
     },
     
@@ -627,43 +808,66 @@ handleExecutorEvent(event) {
     },
     
     /**
-     * Exporta relatório
+     * Exporta relatório detalhado
      */
     exportReport() {
         const report = {
             timestamp: new Date().toISOString(),
+            fuzzerVersion: '13.0',
             environment: {
                 userAgent: navigator.userAgent,
                 platform: navigator.platform,
                 gcAvailable: typeof gc === 'function',
                 workerAvailable: typeof Worker !== 'undefined',
+                sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
+                weakRef: typeof WeakRef !== 'undefined',
+                finalizationRegistry: typeof FinalizationRegistry !== 'undefined',
                 memory: performance?.memory || null
             },
             stats: {
                 totalTests: this.testCount,
-                totalAnomalies: this.anomalyCount,
+                uniqueAnomalies: this.uniqueAnomalyCount,
+                totalAlarms: this.anomalyCount,
                 gcEvents: this.gcEvents,
                 scenariosTested: this.selectedScenarios.size,
-                scenarioResults: this.scenarioResults
+                duration: this.startTime ? ((performance.now() - this.startTime) / 1000).toFixed(1) + 's' : 'N/A'
             },
-            telemetry: typeof Telemetry !== 'undefined' ? Telemetry.report() : {},
-            scenarios: {}
+            scenarioResults: {},
+            anomalyDetails: [],
+            telemetry: typeof Telemetry !== 'undefined' ? Telemetry.report() : {}
         };
         
         // Detalhes de cada cenário
-        for (const name of this.selectedScenarios) {
-            if (Scenarios[name]) {
-                report.scenarios[name] = {
-                    id: Scenarios[name].id,
-                    name: Scenarios[name].name,
-                    risk: Scenarios[name].risk,
-                    category: Scenarios[name].category,
-                    results: this.scenarioResults[name] || {}
-                };
-            }
+        for (const [name, scenario] of Object.entries(Scenarios)) {
+            const results = this.scenarioResults[name] || {};
+            report.scenarioResults[name] = {
+                id: scenario.id,
+                name: scenario.name,
+                risk: scenario.risk,
+                category: scenario.category,
+                tested: this.selectedScenarios.has(name),
+                testCount: results.count || 0,
+                anomalies: results.anomalies || 0,
+                uniqueAnomalies: results.uniqueAnomalies?.size || 0,
+                paused: results.paused || false
+            };
         }
         
-        const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+        // Detalhes das anomalias únicas
+        for (const [key, cached] of this.anomalyCache) {
+            report.anomalyDetails.push({
+                anomaly: key,
+                count: cached.count,
+                firstSeen: new Date(cached.firstSeen).toISOString(),
+                scenario: cached.scenario
+            });
+        }
+        
+        // Ordena por contagem (mais frequentes primeiro)
+        report.anomalyDetails.sort((a, b) => b.count - a.count);
+        
+        const jsonStr = JSON.stringify(report, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         
         const a = document.createElement('a');
@@ -674,7 +878,7 @@ handleExecutorEvent(event) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         
-        this.log('System', `📄 Relatório exportado: ps4-fuzzer-report-${Date.now()}.json`);
+        this.log('System', `📄 Relatório exportado (${(jsonStr.length / 1024).toFixed(1)}KB)`);
     }
 };
 
@@ -685,7 +889,13 @@ if (document.readyState === 'loading') {
     State.init();
 }
 
-// Exporta para debugging
+// Exporta para debugging global
 window.FuzzerState = State;
 window.FuzzerScenarios = Scenarios;
 window.FuzzerScenarioInfo = ScenarioInfo;
+
+console.log('%c💡 Dicas:', 'color: #ffaa00;');
+console.log('  window.FuzzerState — Estado completo do fuzzer');
+console.log('  window.FuzzerScenarios — Todos os cenários');
+console.log('  window.FuzzerScenarioInfo — Info agregada');
+console.log('  ESC — Parar fuzzer | R — Iniciar fuzzer');
