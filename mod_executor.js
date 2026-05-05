@@ -114,6 +114,13 @@ runProbe: function(scenario, base, val, deltaMs) {
     if (base.type === 'number' && valType === 'string' && isExpectedError) {
         return result; // Não é anomalia, é comportamento esperado
     }
+    // Em runProbe, após valRepr = String(val):
+// Se o valor é um objeto, serializa para comparação
+if (valType === 'object' && val !== null) {
+    // Para objetos, compara JSON ou propriedades específicas
+    const valStr = JSON.stringify(val);
+    // Não processa como número se for objeto
+}
     
     // Se ambos são -1 (nosso marcador), também ignorar
     if (base.repr === '-1' && valRepr === '-1') {
