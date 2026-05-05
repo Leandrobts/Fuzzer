@@ -1,6 +1,7 @@
 /**
  * MOD_GC.JS — Garbage Collector Manipulation & Monitoring
  * PS4 13.50 WebKit - Técnicas de pressão de GC
+ * CORRIGIDO: GCOracle exportado corretamente
  */
 
 export const GC = {
@@ -99,31 +100,64 @@ export const GC = {
     }
 };
 
+// ⚠️ CORREÇÃO: GCOracle movido para cá e exportado
 export const GCOracle = {
     freedTags: new Set(),
     registry: null,
     
+    /**
+     * Inicializa o FinalizationRegistry
+     */
     init: function() {
         if (typeof FinalizationRegistry !== 'undefined') {
-            this.registry = new FinalizationRegistry(tag => {
-                this.freedTags.add(tag);
-            });
-            return true;
+            try {
+                this.registry = new FinalizationRegistry(tag => {
+                    this.freedTags.add(tag);
+                });
+                return true;
+            } catch (e) {
+                console.warn('GCOracle: FinalizationRegistry failed to initialize:', e);
+                return false;
+            }
         }
         return false;
     },
     
+    /**
+     * Registra objeto para tracking
+     */
     track: function(obj, tag) {
         if (this.registry) {
-            this.registry.register(obj, tag);
+            try {
+                this.registry.register(obj, tag);
+            } catch (e) {
+                console.warn('GCOracle: Failed to track object:', e);
+            }
         }
     },
     
+    /**
+     * Verifica se tag foi coletada
+     */
     wasFreed: function(tag) {
         return this.freedTags.has(tag);
     },
     
+    /**
+     * Limpa todas as tags
+     */
     clear: function() {
         this.freedTags.clear();
+    },
+    
+    /**
+     * Verifica status do oráculo
+     */
+    status: function() {
+        return {
+            active: this.registry !== null,
+            trackedTags: this.freedTags.size,
+            isPS4: navigator.userAgent.includes('PlayStation')
+        };
     }
 };
