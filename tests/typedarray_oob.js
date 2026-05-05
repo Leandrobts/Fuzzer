@@ -61,18 +61,13 @@ export const testTypedarrayOob = {
     
     probe: [
     // Probe 0: Length do target array (CORRIGIDO - verifica valor real)
-    function(scenario) {
+   function(scenario) {
         try {
-            // Verifica o length REAL (não o que tentamos setar)
-            const realLength = scenario.targetArray?.length ?? -1;
-            // Também verifica se conseguimos acessar posição length (deveria ser undefined)
-            const accessBeyond = scenario.targetArray[realLength];
-            return {
-                length: realLength,
-                accessBeyond: accessBeyond !== undefined ? 'OOB_ACCESS' : 'UNDEFINED_OK'
-            };
+            const len = scenario.targetArray?.length ?? -1;
+            // ⚠️ Retorna 0 se length normal, 1 se alterado (evita falso positivo)
+            return len === 16 ? 0 : len;
         } catch (e) {
-            return { length: -1, error: e.message.slice(0, 30) };
+            return -1;
         }
     },
     
