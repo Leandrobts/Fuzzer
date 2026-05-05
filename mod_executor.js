@@ -1,24 +1,14 @@
 /**
- * MOD_EXECUTOR.JS — Orquestrador Maestro (Versão 12.0 - Desempenho e Precisão)
- * Corrigido: Threshold de 35ms, JSC Internal Pointers, Independência WAF/OOB.
+ * MOD_EXECUTOR.JS — Core Execution Engine (Versão 13.0 - Sniper)
+ * CORRIGIDO: Importa GCOracle de mod_gc.js
  */
 
-import { GC }      from './mod_gc.js';
+import { GC, GCOracle } from './mod_gc.js';  // ⚠️ CORREÇÃO AQUI
 import { Mutator } from './mod_mutator.js';
 import { Groomer } from './mod_groomer.js';
 
-     /**
- * MOD_EXECUTOR.JS — Core Execution Engine (Versão 13.0 - Sniper)
- * Integrando: GCOracle V2, Sniper Telemetry e NaN-Boxing Diagnostics.
- */
-
-// Oráculo para monitorar a coleta de lixo (Garbage Collection)
-export const GCOracle = {
-    freedTags: new Set(),
-    registry: (typeof FinalizationRegistry !== 'undefined') ? new FinalizationRegistry(tag => {
-        GCOracle.freedTags.add(tag);
-    }) : null
-};
+// ⚠️ REMOVIDO: Definição duplicada do GCOracle
+// O GCOracle agora vem do mod_gc.js
 
 export const Executor = {
     isRunning: false,
@@ -88,6 +78,11 @@ export const Executor = {
                     }
                 } catch (e) {
                     // Silenciamos erros esperados de execução para não travar o loop
+                    yield {
+                        type: 'DEBUG',
+                        scenario: scenario.id,
+                        error: e.message
+                    };
                 } finally {
                     scenario.cleanup();
                 }
