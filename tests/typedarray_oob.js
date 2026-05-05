@@ -1,7 +1,7 @@
 /**
  * TEST: TypedArray Out-of-Bounds via length corruption
- * CORRIGIDO: Falsos positivos eliminados, probes retornam valores comparáveis
- * PS4 13.50: TypedArrays disponíveis, alvo principal de exploits JSC
+ * VERSÃO COM VERIFICAÇÃO: Confirma se length foi REALMENTE alterado
+ * PS4 13.50: Se detectar length corruption real = VULNERABILIDADE CONFIRMADA
  */
 
 export const testTypedarrayOob = {
@@ -21,7 +21,7 @@ export const testTypedarrayOob = {
         this.targetArray = new Uint32Array(this.ARRAY_SIZE);
         this.targetArray.fill(0xAAAAAAAA);
         
-        // Array espião (para detectar vazamento)
+        // Array espião
         this.spyArray = new Uint32Array(this.ARRAY_SIZE);
         this.spyArray.fill(0xBBBBBBBB);
         
@@ -32,7 +32,7 @@ export const testTypedarrayOob = {
         }
         this.secretArray[0] = this.SECRET_MARKER;
         
-        // Grooming: cria muitos arrays para heap feng shui
+        // Grooming
         this.groomArrays = [];
         for (let i = 0; i < this.GROOM_COUNT; i++) {
             const arr = new Float64Array(this.ARRAY_SIZE);
@@ -40,10 +40,16 @@ export const testTypedarrayOob = {
             this.groomArrays.push(arr);
         }
         
-        // Armazena referência fraca
-        this.weakTarget = typeof WeakRef !== 'undefined' ? 
-            new WeakRef(this.targetArray) : null;
-            
+        // Flags de verificação
+        this.lengthReallyChanged = false;
+        this.oobAccessSuccessful = false;
+        this.oobWriteSuccessful = false;
+        this.leakedDataFromOOB = null;
+        this.originalLength = this.targetArray.length;
+        
+        // ⚠️ ARMAZENA o valor original do length para comparação
+        this.lengthBeforeTrigger = this.targetArray.length;
+        
         // Flags para validação
         this.oobView = null;
         this.oobData = undefined;
@@ -59,19 +65,23 @@ export const testTypedarrayOob = {
         this.bigViewError = null;
         this.subarrayResult = null;
         this.setResult = null;
-        this.lengthCorrupted = false;
+        this.floatLeak = null;
+        this.sliceResult = null;
     },
     
     probe: [
-        // Probe 0: Length do target array (CORRIGIDO: retorna 0 ou length real)
+        // Probe 0: Length REAL do target array
         function(scenario) {
             try {
-                const len = scenario.targetArray?.length ?? -1;
-                // Se length NÃO é o original (16), retorna o valor real
-                // Se é 16 (normal), retorna 0 para baseline consistente
-                if (len === 16) return 0;
-                scenario.lengthCorrupted = true;
-                return len;
+                // ⚠️ Lê o length DIRETAMENTE do objeto
+                const realLength = scenario.targetArray.length;
+                
+                // Verifica se realmente mudou
+                if (realLength !== 16) {
+                    scenario.lengthReallyChanged = true;
+                }
+                
+                return realLength;
             } catch (e) {
                 return -1;
             }
@@ -91,22 +101,64 @@ export const testTypedarrayOob = {
             }
         },
         
-        // Probe 3: Acesso OOB (posição length - deveria ser undefined)
+        // Probe 3: Acesso OOB (tenta ler posição 20, além do original)
         function(scenario) {
             try {
-                const len = scenario.targetArray?.length ?? 0;
-                const val = scenario.targetArray[len];
-                // Retorna 1 se conseguiu acessar (OOB), 0 se undefined (normal)
+                // Tenta acessar posição além do tamanho original (16)
+                const val = scenario.targetArray[20];
+                if (val !== undefined) {
+                    scenario.oobAccessSuccessful = true;
+                }
                 return val !== undefined ? 1 : 0;
             } catch (e) {
                 return -1;
             }
         },
         
-        // Probe 4: Spy array integridade (0xBBBBBBBB = normal)
+        // Probe 4: Spy array integridade
         function(scenario) {
             try {
                 return scenario.spyArray[0] ?? -1;
+            } catch (e) {
+                return -1;
+            }
+        },
+        
+        // Probe 5: VERIFICAÇÃO CRÍTICA - tenta escrever em posição OOB
+        function(scenario) {
+            try {
+                // Tenta escrever na posição 20 (além do original)
+                const before = scenario.targetArray[20];
+                scenario.targetArray[20] = 0xCAFEBABE;
+                const after = scenario.targetArray[20];
+                
+                if (after === 0xCAFEBABE) {
+                    scenario.oobWriteSuccessful = true;
+                    return 1; // Escrita OOB bem-sucedida!
+                }
+                return 0;
+            } catch (e) {
+                return -1; // Erro (esperado se length não mudou)
+            }
+        },
+        
+        // Probe 6: Tenta ler dados vazados de posições OOB
+        function(scenario) {
+            try {
+                const leaked = [];
+                // Lê posições além do array original
+                for (let i = 16; i < Math.min(scenario.targetArray.length, 30); i++) {
+                    const val = scenario.targetArray[i];
+                    if (val !== undefined && val !== 0xCAFEBABE) {
+                        leaked.push({ index: i, value: '0x' + val.toString(16) });
+                    }
+                }
+                
+                if (leaked.length > 0) {
+                    scenario.leakedDataFromOOB = leaked;
+                }
+                
+                return leaked.length;
             } catch (e) {
                 return -1;
             }
@@ -114,16 +166,33 @@ export const testTypedarrayOob = {
     ],
     
     trigger: function() {
-        // Ataque 1: Tenta modificar length via defineProperty
+        // ⚠️ ATAQUE PRINCIPAL: Tenta modificar length via defineProperty
         try {
             Object.defineProperty(this.targetArray, 'length', {
                 value: 1000000,
                 writable: true,
                 configurable: true
             });
-            // Verifica se realmente funcionou
+            
+            // VERIFICAÇÃO IMEDIATA
             if (this.targetArray.length === 1000000) {
-                this.lengthCorrupted = true;
+                this.lengthReallyChanged = true;
+                
+                // Tenta acessar posição OOB imediatamente
+                try {
+                    const oobVal = this.targetArray[20];
+                    if (oobVal !== undefined) {
+                        this.oobAccessSuccessful = true;
+                    }
+                    
+                    // Tenta escrever
+                    this.targetArray[20] = 0x41414141;
+                    if (this.targetArray[20] === 0x41414141) {
+                        this.oobWriteSuccessful = true;
+                    }
+                } catch (e) {
+                    // Se definir length funcionou mas acesso OOB falhou
+                }
             }
         } catch (e) {
             this.definePropError = e.message;
@@ -133,37 +202,32 @@ export const testTypedarrayOob = {
         try {
             this.targetArray.length = 1000000;
             if (this.targetArray.length === 1000000) {
-                this.lengthCorrupted = true;
+                this.lengthReallyChanged = true;
             }
         } catch (e) {
-            // Esperado falhar em TypedArrays (length é readonly)
+            // Esperado falhar
         }
         
-        // Ataque 3: Cria view com offset malicioso (negativo)
+        // Ataque 3: Cria view com offset negativo
         try {
             const buffer = this.targetArray.buffer;
-            // Tenta criar view começando ANTES do buffer
             const oobView = new Uint32Array(buffer, -4, 100);
             this.oobView = oobView;
-            this.oobData = oobView[0]; // Leitura antes do buffer!
+            this.oobData = oobView[0];
         } catch (e) {
             this.oobViewError = e.message;
         }
         
-        // Ataque 4: View com length maior que o buffer
+        // Ataque 4: View com length maior que buffer
         try {
             const buffer = this.targetArray.buffer;
             const bigView = new Uint32Array(buffer, 0, 1000000);
-            // Se chegou aqui, conseguiu criar view gigante!
             this.bigViewData = [];
-            const maxRead = Math.min(this.ARRAY_SIZE + 20, 1000000);
-            for (let i = this.ARRAY_SIZE; i < maxRead; i++) {
+            for (let i = this.ARRAY_SIZE; i < Math.min(this.ARRAY_SIZE + 20, 1000000); i++) {
                 try {
-                    const val = bigView[i];
                     this.bigViewData.push({
                         index: i,
-                        value: val,
-                        hex: '0x' + (val?.toString(16) ?? 'undefined')
+                        value: '0x' + bigView[i]?.toString(16)
                     });
                 } catch (e) {
                     this.bigViewData.push({ index: i, error: e.message });
@@ -178,7 +242,6 @@ export const testTypedarrayOob = {
         try {
             const dv = new DataView(this.targetArray.buffer);
             this.dvReads = [];
-            
             const testOffsets = [-8, -4, 0, 4, 8, 
                                 this.targetArray.byteLength - 8,
                                 this.targetArray.byteLength,
@@ -196,52 +259,51 @@ export const testTypedarrayOob = {
             this.dvError = e.message;
         }
         
-        // Ataque 6: copyWithin com índices além dos limites
+        // Ataque 6: copyWithin com índices OOB
         try {
             this.targetArray.copyWithin(0, this.ARRAY_SIZE, this.ARRAY_SIZE + 10);
         } catch (e) {
             this.copyError = e.message;
         }
         
-        // Ataque 7: subarray com índices negativos
+        // Ataque 7: subarray negativo
         try {
             const sub = this.targetArray.subarray(-10, 100);
             if (sub && sub.length > 0) {
                 this.subarrayResult = { 
                     length: sub.length, 
-                    firstVal: sub[0],
-                    firstHex: '0x' + (sub[0]?.toString(16) ?? 'undefined')
+                    firstVal: '0x' + sub[0]?.toString(16)
                 };
             }
         } catch (e) {
             this.subarrayError = e.message;
         }
         
-        // Ataque 8: set() com array maior que o target
+        // Ataque 8: set() com overflow
         try {
             const bigSource = new Uint32Array(1000);
             bigSource.fill(0x13371337);
             this.targetArray.set(bigSource);
-            this.setResult = 'SET_SUCCESS_WITH_OVERFLOW';
+            this.setResult = 'SET_OVERFLOW_SUCCESS';
         } catch (e) {
             this.setError = e.message;
         }
         
-        // Ataque 9: slice para criar cópia e verificar boundary
+        // Ataque 9: slice OOB
         try {
             const sliced = this.targetArray.slice(0, this.ARRAY_SIZE + 10);
             if (sliced && sliced.length > this.ARRAY_SIZE) {
                 this.sliceResult = {
                     requested: this.ARRAY_SIZE + 10,
                     actual: sliced.length,
-                    extraData: Array.from(sliced.slice(this.ARRAY_SIZE))
+                    extraData: Array.from(sliced.slice(this.ARRAY_SIZE)).map(v => '0x' + v.toString(16))
                 };
             }
         } catch (e) {
             this.sliceError = e.message;
         }
         
-        // Ataque 10: Cria Float64Array sobre mesmo buffer e lê como double
+        // Ataque 10: Float64 leak detection
         try {
             const floatView = new Float64Array(this.targetArray.buffer);
             this.floatLeak = [];
@@ -250,15 +312,14 @@ export const testTypedarrayOob = {
                 this.floatLeak.push({
                     index: i,
                     value: val,
-                    isPointer: Math.abs(val) > 100000 && Math.abs(val) < 0x7FFFFFFFFFFF,
-                    hex: val.toString(16)
+                    isPointer: Math.abs(val) > 100000 && Math.abs(val) < 0x7FFFFFFFFFFF
                 });
             }
         } catch (e) {
             this.floatError = e.message;
         }
         
-        // Força GC após ataques
+        // Força GC
         if (typeof gc === 'function') {
             gc();
             gc();
@@ -273,100 +334,118 @@ export const testTypedarrayOob = {
         this.oobView = null;
         this.bigViewData = null;
         this.dvReads = null;
-        this.weakTarget = null;
         this.floatLeak = null;
     },
     
     customValidator: function(baseResults, afterResults) {
-        // 1. Verifica se length foi REALMENTE corrompido
-        if (afterResults[0] !== 0 && afterResults[0] !== -1) {
+        // ⚠️ VERIFICAÇÃO PRINCIPAL: Length realmente mudou?
+        const lengthBefore = baseResults[0]; // Baseline (deveria ser 16)
+        const lengthAfter = afterResults[0];  // Após trigger
+        
+        // Se length realmente mudou de 16 para outro valor
+        if (lengthBefore === 16 && lengthAfter !== 16 && lengthAfter > 0) {
+            
+            // Verifica se OOB acesso funcionou
+            if (afterResults[3] === 1) {
+                return {
+                    anomaly: true,
+                    reason: `💥💥💥 LENGTH CORRUPTION CONFIRMADA: length do TypedArray alterado de 16 para ${lengthAfter}! Acesso OOB confirmado na posição 20!`
+                };
+            }
+            
+            // Verifica se OOB escrita funcionou
+            if (afterResults[5] === 1) {
+                return {
+                    anomaly: true,
+                    reason: `💥💥💥 OOB WRITE CONFIRMADA: Escrita bem-sucedida além do buffer original! Length alterado para ${lengthAfter}. Vulnerabilidade de escrita arbitrária!`
+                };
+            }
+            
+            // Verifica se dados foram vazados
+            if (afterResults[6] > 0 && this.leakedDataFromOOB) {
+                return {
+                    anomaly: true,
+                    reason: `💥💥💥 OOB READ CONFIRMADA: ${afterResults[6]} valores vazados de posições OOB! Dados: ${JSON.stringify(this.leakedDataFromOOB.slice(0, 3))}`
+                };
+            }
+            
+            // Length mudou mas não conseguiu OOB (falso positivo?)
             return {
                 anomaly: true,
-                reason: `💥 LENGTH CORRUPTION REAL: length do TypedArray alterado de 16 para ${afterResults[0]}! (defineProperty/bypass confirmado)`
+                reason: `⚠️ LENGTH ALTERADO (${lengthBefore} -> ${lengthAfter}) mas OOB não confirmado. Possível falsa modificação ou proteção parcial.`
             };
         }
         
-        // 2. Verifica OOB view com offset negativo (CRÍTICO)
+        // Verifica OOB view com offset negativo
         if (this.oobView && this.oobData !== undefined) {
             return {
                 anomaly: true,
-                reason: `💥 OOB VIEW: View com offset negativo criada! Leitura antes do buffer: 0x${this.oobData?.toString(16)}`
+                reason: `💥 OOB VIEW NEGATIVA: View com offset -4 criada! Leitura: 0x${this.oobData?.toString(16)}`
             };
         }
         
-        // 3. Verifica view com length > buffer (bypass de validação)
+        // Verifica view com length bypass
         if (this.bigViewData && this.bigViewData.length > 0) {
             const validReads = this.bigViewData.filter(r => !r.error);
             if (validReads.length > 0) {
-                const first = validReads[0];
                 return {
                     anomaly: true,
-                    reason: `💥 LENGTH BYPASS: View criada com length maior que buffer. ${validReads.length} leituras OOB. Primeiro: index=${first.index}, valor=${first.hex}`
+                    reason: `💥 LENGTH BYPASS: View gigante criada. ${validReads.length} leituras OOB. Primeiro: ${JSON.stringify(validReads[0])}`
                 };
             }
         }
         
-        // 4. DataView OOB (offsets negativos ou além do buffer)
+        // Verifica DataView OOB
         if (this.dvReads) {
             const negativeReads = this.dvReads.filter(r => r.offset < 0 && !r.error);
-            const beyondReads = this.dvReads.filter(r => r.offset >= this.targetArray?.buffer?.byteLength && !r.error);
-            
             if (negativeReads.length > 0) {
                 return {
                     anomaly: true,
-                    reason: `💥 DATAVIEW NEGATIVE: ${negativeReads.length} leituras DataView com offset negativo! offset=${negativeReads[0].offset}, valor=${negativeReads[0].value}`
-                };
-            }
-            
-            if (beyondReads.length > 0) {
-                return {
-                    anomaly: true,
-                    reason: `🏆 DATAVIEW OOB: ${beyondReads.length} leituras além do buffer! offset=${beyondReads[0].offset}`
+                    reason: `💥 DATAVIEW NEGATIVE: Leitura com offset negativo funcionou! offset=${negativeReads[0].offset}`
                 };
             }
         }
         
-        // 5. set() com overflow (escrita OOB)
-        if (this.setResult === 'SET_SUCCESS_WITH_OVERFLOW') {
+        // Verifica set() overflow
+        if (this.setResult === 'SET_OVERFLOW_SUCCESS') {
             return {
                 anomaly: true,
-                reason: `💥 SET OVERFLOW: set() com array de 1000 elementos em buffer de 64 bytes NÃO lançou erro! Escrita OOB massiva!`
+                reason: `💥 SET OVERFLOW: set() com 1000 elementos não lançou erro! Possível escrita OOB massiva.`
             };
         }
         
-        // 6. subarray com índices negativos
+        // Verifica subarray negativo
         if (this.subarrayResult && this.subarrayResult.length > 0) {
             return {
                 anomaly: true,
-                reason: `🏆 SUBARRAY NEGATIVE: subarray(-10, 100) criou view de length=${this.subarrayResult.length}. Primeiro valor: ${this.subarrayResult.firstHex}`
+                reason: `🏆 SUBARRAY BYPASS: subarray(-10, 100) criou view de length=${this.subarrayResult.length}`
             };
         }
         
-        // 7. slice que retornou mais dados que o esperado
+        // Verifica slice OOB
         if (this.sliceResult && this.sliceResult.actual > this.ARRAY_SIZE) {
             return {
                 anomaly: true,
-                reason: `💥 SLICE OOB: slice(0, ${this.sliceResult.requested}) retornou ${this.sliceResult.actual} elementos! Dados extras: ${JSON.stringify(this.sliceResult.extraData)}`
+                reason: `💥 SLICE OOB: slice retornou ${this.sliceResult.actual} elementos. Extras: ${JSON.stringify(this.sliceResult.extraData)}`
             };
         }
         
-        // 8. Float64 leak detection (possíveis ponteiros)
+        // Verifica Float64 pointer leak
         if (this.floatLeak) {
             const pointers = this.floatLeak.filter(f => f.isPointer);
             if (pointers.length > 0) {
                 return {
                     anomaly: true,
-                    reason: `💥 FLOAT64 POINTER LEAK: ${pointers.length} possíveis ponteiros vazados via Float64Array! Primeiro: ${pointers[0].hex}`
+                    reason: `💥 FLOAT64 LEAK: ${pointers.length} possíveis ponteiros vazados via Float64Array`
                 };
             }
         }
         
-        // 9. Spy array corrompido (overflow atingiu array vizinho)
+        // Verifica spy array corrompido
         if (afterResults[4] !== 0xBBBBBBBB && afterResults[4] !== -1) {
-            const spyVal = afterResults[4];
             return {
                 anomaly: true,
-                reason: `💥 SPY CORRUPTION: Array espião corrompido! Era 0xBBBBBBBB, agora é 0x${spyVal?.toString(16)} — Overflow para array adjacente!`
+                reason: `💥 SPY CORRUPTION: Array espião corrompido! 0xBBBBBBBB -> 0x${afterResults[4]?.toString(16)}`
             };
         }
         
