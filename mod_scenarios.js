@@ -13,6 +13,8 @@ import { testSpliceSliceNegative } from './tests/splice_slice_negative.js';
 import { testArrayPrototypeOverride } from './tests/array_prototype_override.js';
 import { testRegexCatastrophic } from './tests/regex_catastrophic.js';
 import { testDeepRecursionAttack } from './tests/deep_recursion_attack.js';
+import { testSpeciesConstructorConfusionAdvanced } from './tests/species_constructor_confusion_advanced.js';
+import { testWorkerTransferUafAdvanced } from './tests/worker_transfer_uaf_advanced.js';
 // Testes Canvas
 import { testCanvasPixelStealing } from './tests/canvas_pixel_stealing.js';
 
@@ -113,6 +115,8 @@ export const Scenarios = {
     spliceSliceNegative: testSpliceSliceNegative,
     arrayPrototypeOverride: testArrayPrototypeOverride,
         workerTransferUaf: testWorkerTransferUaf,
+        speciesConfusionAdvanced: testSpeciesConstructorConfusionAdvanced,
+    workerTransferUafAdvanced: testWorkerTransferUafAdvanced,
     
     // Info Leaks
     functionToStringLeak: testFunctionToStringLeak,
