@@ -2,6 +2,7 @@
  * MOD_SCENARIOS.JS — Dynamic Test Loader (ATUALIZADO)
  * 15 testes carregados (incluindo PoC da vulnerabilidade confirmada)
  */
+import { exploitLengthCorruptionDeep } from './exploits/length_corruption_deep_exploit.js';
 import { exploitTypedarrayLengthToOob } from './exploits/typedarray_length_to_oob.js';
 import { exploitTypedarraySpray } from './exploits/typedarray_spray_exploit.js';
 import { testWorkerTransferUaf } from './tests/worker_transfer_uaf.js';
@@ -62,7 +63,7 @@ import { testTypedarrayLengthCorruptionPoc } from './tests/typedarray_length_cor
  * TOTAL: 15 testes
  */
 export const Scenarios = {
-
+lengthCorruptionDeep: exploitLengthCorruptionDeep,
     exploitLengthToOob: exploitTypedarrayLengthToOob,
     exploitSprayLength: exploitTypedarraySpray,
     // ==========================================
