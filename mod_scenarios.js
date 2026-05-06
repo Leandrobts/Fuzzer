@@ -47,6 +47,8 @@ import { testMessagechannelRace } from './tests/messagechannel_race.js';
 import { testSpeciesConstructorConfusion } from './tests/species_constructor_confusion.js';
 import { testIteratorPoisoning } from './tests/iterator_poisoning.js';
 import { testThenableConfusion } from './tests/thenable_confusion.js';
+import { testCombinatorialAttack } from './tests/combinatorial_attack.js';
+import { testJitDeoptimizationAttack } from './tests/jit_deoptimization_attack.js';
 
 // ⚠️ PoC da Vulnerabilidade Confirmada
 import { testTypedarrayLengthCorruptionPoc } from './tests/typedarray_length_corruption_poc.js';
@@ -119,6 +121,8 @@ export const Scenarios = {
         speciesConstructorConfusion: testSpeciesConstructorConfusion,
     iteratorPoisoning: testIteratorPoisoning,
     thenableConfusion: testThenableConfusion,
+        combinatorialAttack: testCombinatorialAttack,
+    jitDeoptimizationAttack: testJitDeoptimizationAttack,
 };
 
 /**
