@@ -44,6 +44,9 @@ import { testTypedarrayOob } from './tests/typedarray_oob.js';
 import { testGcUaf } from './tests/gc_uaf.js';
 import { testJscTypeConfusion } from './tests/jsc_type_confusion.js';
 import { testMessagechannelRace } from './tests/messagechannel_race.js';
+import { testSpeciesConstructorConfusion } from './tests/species_constructor_confusion.js';
+import { testIteratorPoisoning } from './tests/iterator_poisoning.js';
+import { testThenableConfusion } from './tests/thenable_confusion.js';
 
 // ⚠️ PoC da Vulnerabilidade Confirmada
 import { testTypedarrayLengthCorruptionPoc } from './tests/typedarray_length_corruption_poc.js';
@@ -113,6 +116,9 @@ export const Scenarios = {
     
     // Descriptor Bypass
     descriptorBypass: testDescriptorBypass,
+        speciesConstructorConfusion: testSpeciesConstructorConfusion,
+    iteratorPoisoning: testIteratorPoisoning,
+    thenableConfusion: testThenableConfusion,
 };
 
 /**
