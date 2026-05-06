@@ -2,6 +2,10 @@
  * MOD_SCENARIOS.JS — Dynamic Test Loader (ATUALIZADO)
  * 15 testes carregados (incluindo PoC da vulnerabilidade confirmada)
  */
+import { testWorkerTransferUaf } from './tests/worker_transfer_uaf.js';
+import { testFunctionToStringLeak } from './tests/function_toString_leak.js';
+import { testErrorStackLeak } from './tests/error_stack_leak.js';
+import { testDescriptorBypass } from './tests/descriptor_bypass.js';
 import { testDataviewOobPrecise } from './tests/dataview_oob_precise.js';
 import { testSpliceSliceNegative } from './tests/splice_slice_negative.js';
 import { testArrayPrototypeOverride } from './tests/array_prototype_override.js';
@@ -96,6 +100,14 @@ export const Scenarios = {
     dataviewOobPrecise: testDataviewOobPrecise,
     spliceSliceNegative: testSpliceSliceNegative,
     arrayPrototypeOverride: testArrayPrototypeOverride,
+        workerTransferUaf: testWorkerTransferUaf,
+    
+    // Info Leaks
+    functionToStringLeak: testFunctionToStringLeak,
+    errorStackLeak: testErrorStackLeak,
+    
+    // Descriptor Bypass
+    descriptorBypass: testDescriptorBypass,
 };
 
 /**
