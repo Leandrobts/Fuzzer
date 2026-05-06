@@ -2,7 +2,9 @@
  * MOD_SCENARIOS.JS — Dynamic Test Loader (ATUALIZADO)
  * 15 testes carregados (incluindo PoC da vulnerabilidade confirmada)
  */
-
+import { testDataviewOobPrecise } from './tests/dataview_oob_precise.js';
+import { testSpliceSliceNegative } from './tests/splice_slice_negative.js';
+import { testArrayPrototypeOverride } from './tests/array_prototype_override.js';
 // Testes Canvas
 import { testCanvasPixelStealing } from './tests/canvas_pixel_stealing.js';
 
@@ -91,6 +93,9 @@ export const Scenarios = {
     // Storage (1)
     // ==========================================
     localStorageSniffing: testLocalStorageSniffing,
+    dataviewOobPrecise: testDataviewOobPrecise,
+    spliceSliceNegative: testSpliceSliceNegative,
+    arrayPrototypeOverride: testArrayPrototypeOverride,
 };
 
 /**
