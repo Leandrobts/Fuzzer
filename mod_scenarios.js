@@ -11,6 +11,8 @@ import { testDescriptorBypass } from './tests/descriptor_bypass.js';
 import { testDataviewOobPrecise } from './tests/dataview_oob_precise.js';
 import { testSpliceSliceNegative } from './tests/splice_slice_negative.js';
 import { testArrayPrototypeOverride } from './tests/array_prototype_override.js';
+import { testRegexCatastrophic } from './tests/regex_catastrophic.js';
+import { testDeepRecursionAttack } from './tests/deep_recursion_attack.js';
 // Testes Canvas
 import { testCanvasPixelStealing } from './tests/canvas_pixel_stealing.js';
 
@@ -123,6 +125,8 @@ export const Scenarios = {
     thenableConfusion: testThenableConfusion,
         combinatorialAttack: testCombinatorialAttack,
     jitDeoptimizationAttack: testJitDeoptimizationAttack,
+        regexCatastrophic: testRegexCatastrophic,
+    deepRecursionAttack: testDeepRecursionAttack,
 };
 
 /**
